@@ -108,6 +108,56 @@ def health():
     return {"status": "ok", "service": "CropGuard AI", "model": model_status()}
 
 
+@app.get("/api/setup/seed")
+def run_seed_once():
+    """One-time seed endpoint for Render deployment - delete after use"""
+    from database import SessionLocal
+    from models import Farm, User
+    from auth import hash_password as get_password_hash
+
+    if not os.environ.get("RENDER"):
+        return {"message": "Only runs on Render server"}
+
+    db = SessionLocal()
+    try:
+        # Check if already seeded
+        existing = db.query(User).filter(User.email == "admin@cropguard.ai").first()
+        if existing:
+            return {"message": "Already seeded", "status": "ok"}
+
+        # Create users
+        users = [
+            User(name="CropGuard Admin", email="admin@cropguard.ai",
+                 password_hash=get_password_hash("admin123"), role="admin"),
+            User(name="Ramesh Farmer", email="farmer@cropguard.ai",
+                 password_hash=get_password_hash("farmer123"), role="farmer"),
+            User(name="Suresh Manager", email="manager@cropguard.ai",
+                 password_hash=get_password_hash("manager123"), role="manager"),
+        ]
+        for u in users:
+            db.add(u)
+        db.flush()
+
+        # Create farms
+        farms = [
+            Farm(user_id=users[1].id, name="Hosahalli Block A",
+                 location="Hosahalli, Karnataka", crop_type="Chrysanthemum", area_acres=2.5),
+            Farm(user_id=users[1].id, name="Hosahalli Block B",
+                 location="Hosahalli, Karnataka", crop_type="Chrysanthemum", area_acres=3.0),
+        ]
+        for f in farms:
+            db.add(f)
+        db.commit()
+
+        return {"message": "Seeded successfully", "status": "ok",
+                "users": ["admin@cropguard.ai", "farmer@cropguard.ai", "manager@cropguard.ai"]}
+    except Exception as e:
+        db.rollback()
+        return {"error": str(e)}
+    finally:
+        db.close()
+
+
 if FRONTEND_DIR.exists():
     app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 
