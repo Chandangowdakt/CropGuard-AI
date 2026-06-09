@@ -6,13 +6,17 @@ if hasattr(sys.stdout, "reconfigure"):
     except (OSError, ValueError):
         pass
 
+import os
 from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = BASE_DIR / "cropguard.db"
+if os.environ.get("RENDER"):
+    DB_PATH = Path("/tmp/cropguard.db")
+else:
+    DB_PATH = BASE_DIR / "cropguard.db"
 DATABASE_URL = f"sqlite:///{DB_PATH}"
 
 engine = create_engine(

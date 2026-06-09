@@ -1,12 +1,8 @@
 const { useState, useEffect, useCallback, useRef, useContext, createContext, useMemo } = React;
 
-const API_BASE = (() => {
-  const { origin, port } = window.location;
-  if (origin === "file://" || port === "5500") {
-    return "http://localhost:8001";
-  }
-  return origin;
-})();
+const API_BASE = window.location.hostname === "localhost"
+  ? "http://localhost:8001"
+  : "https://cropguard-ai-backend.onrender.com";
 
 // ── API helpers ───────────────────────────────────────────────────────────────
 function getToken() {

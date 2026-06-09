@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from ai_engine import ModelLoadError, ModelNotFoundError, predict_image_bytes
+from ai_engine import ModelLoadError, get_model_status, predict_image_bytes
 from whatsapp_alerts import WHATSAPP_CONFIDENCE_THRESHOLD, send_whatsapp_alert
 from auth import get_accessible_farm_ids, get_current_user, get_farm_for_user
 from database import get_db
@@ -68,12 +68,16 @@ async def _read_image_upload(file: UploadFile) -> tuple[bytes, str]:
 def _run_prediction(image_bytes: bytes) -> dict:
     try:
         return predict_image_bytes(image_bytes)
-    except ModelNotFoundError as e:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
     except ModelLoadError as e:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.get("/model-status")
+def detection_model_status():
+    """Public model health check (no auth required)."""
+    return get_model_status()
 
 
 def _persist_detection(

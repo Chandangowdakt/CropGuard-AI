@@ -1,0 +1,28 @@
+# Python cache - never commit these
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Secrets - NEVER commit
+.env
+backend/.env
+*.env
+
+# Database - regenerated automatically
+*.db
+backend/cropguard.db
+
+# AI model - too large for GitHub (14MB)
+*.pth
+*.pt
+backend/chrysanthemum_model.pth
+
+# Uploaded images - not needed on server
+backend/storage/
+storage/
+
+# OS files
+.DS_Store
+Thumbs.db
+*.log

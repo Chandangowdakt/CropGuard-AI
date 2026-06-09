@@ -25,15 +25,19 @@ CLASS_NAMES = ["healthy", "diseased", "pest_affected", "water_stressed"]
 PROBLEM_CLASSES = {"diseased", "pest_affected", "water_stressed"}
 CONFIDENCE_THRESHOLD = 75.0
 LOW_CONFIDENCE_MESSAGE = "Low confidence — please take a clearer close-up photo of the leaf"
+MODEL_UNAVAILABLE_MESSAGE = "AI model not loaded. Please upload the model file."
 IMAGE_SIZE = 224
 
-# Trained model (override with CROPGUARD_MODEL_PATH env var)
-DEFAULT_MODEL_PATH = Path(
-    r"C:\Users\ktcha\Downloads\ai engine\chrysanthemum_ai\models\chrysanthemum_model.pth"
-)
-MODEL_PATH = Path(os.getenv("CROPGUARD_MODEL_PATH", str(DEFAULT_MODEL_PATH)))
+BACKEND_DIR = Path(__file__).resolve().parent
+MODEL_SEARCH_PATHS = [
+    Path("/tmp/chrysanthemum_model.pth"),
+    BACKEND_DIR / "chrysanthemum_model.pth",
+    Path("chrysanthemum_model.pth"),
+]
 
 _bundle = None
+model_loaded = False
+_resolved_path: Path | None = None
 
 
 class ModelNotFoundError(FileNotFoundError):
@@ -42,6 +46,18 @@ class ModelNotFoundError(FileNotFoundError):
 
 class ModelLoadError(RuntimeError):
     """Raised when the checkpoint cannot be loaded."""
+
+
+def _resolve_model_path() -> Path | None:
+    env_path = os.getenv("CROPGUARD_MODEL_PATH")
+    if env_path:
+        candidate = Path(env_path)
+        if candidate.exists():
+            return candidate
+    for candidate in MODEL_SEARCH_PATHS:
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def _build_transform(image_size: int = IMAGE_SIZE) -> transforms.Compose:
@@ -53,20 +69,19 @@ def _build_transform(image_size: int = IMAGE_SIZE) -> transforms.Compose:
     ])
 
 
-def load_engine() -> dict:
-    global _bundle
+def load_engine() -> dict | None:
+    global _bundle, model_loaded, _resolved_path
     if _bundle is not None:
         return _bundle
 
-    if not MODEL_PATH.exists():
-        raise ModelNotFoundError(
-            f"Chrysanthemum model not found at:\n  {MODEL_PATH}\n\n"
-            "Train the model first (phase4_train.py) or set CROPGUARD_MODEL_PATH."
-        )
+    _resolved_path = _resolve_model_path()
+    if _resolved_path is None:
+        model_loaded = False
+        return None
 
     try:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        checkpoint = torch.load(MODEL_PATH, map_location=device, weights_only=False)
+        checkpoint = torch.load(_resolved_path, map_location=device, weights_only=False)
 
         class_names = checkpoint.get("class_names", CLASS_NAMES)
         num_classes = checkpoint.get("num_classes", len(class_names))
@@ -85,11 +100,43 @@ def load_engine() -> dict:
             "class_names": class_names,
             "device": device,
         }
+        model_loaded = True
         return _bundle
-    except ModelNotFoundError:
-        raise
     except Exception as e:
-        raise ModelLoadError(f"Failed to load model from {MODEL_PATH}: {e}") from e
+        model_loaded = False
+        _bundle = None
+        raise ModelLoadError(f"Failed to load model from {_resolved_path}: {e}") from e
+
+
+def get_model_status() -> dict:
+    """Return whether the AI model is loaded and where it was found."""
+    global model_loaded, _resolved_path
+    if _bundle is not None and _resolved_path is not None:
+        return {"loaded": True, "path": str(_resolved_path)}
+
+    resolved = _resolve_model_path()
+    if resolved is None:
+        model_loaded = False
+        _resolved_path = None
+        return {"loaded": False, "path": None}
+
+    try:
+        load_engine()
+        if model_loaded and _resolved_path is not None:
+            return {"loaded": True, "path": str(_resolved_path)}
+    except ModelLoadError:
+        pass
+
+    return {"loaded": False, "path": str(resolved)}
+
+
+def _unavailable_result() -> dict:
+    return {
+        "class": "unavailable",
+        "confidence": 0,
+        "is_problem": False,
+        "message": MODEL_UNAVAILABLE_MESSAGE,
+    }
 
 
 def _format_result(class_name: str, confidence: float) -> dict:
@@ -103,6 +150,9 @@ def _format_result(class_name: str, confidence: float) -> dict:
 @torch.no_grad()
 def _predict_pil(image: Image.Image) -> dict:
     bundle = load_engine()
+    if bundle is None:
+        return _unavailable_result()
+
     model = bundle["model"]
     transform = bundle["transform"]
     device = bundle["device"]
@@ -128,8 +178,11 @@ def predict_image(image_path: str | Path) -> dict:
         raise FileNotFoundError(f"Image not found: {path}")
     try:
         image = Image.open(path)
-        return _predict_pil(image)
-    except (ModelNotFoundError, ModelLoadError):
+        raw = _predict_pil(image)
+        if raw.get("class") == "unavailable":
+            return raw
+        return raw
+    except ModelLoadError:
         raise
     except Exception as e:
         raise ValueError(f"Could not read image {path}: {e}") from e
@@ -141,18 +194,25 @@ def predict_image_bytes(image_bytes: bytes) -> dict:
 
     Returns:
         {
-            "class": "diseased" | "uncertain",
+            "class": "diseased" | "uncertain" | "unavailable",
             "actual_class": "diseased",
             "confidence": 99.7,
             "is_problem": true,
-            "message": "...optional low-confidence warning...",
+            "message": "...optional warning...",
         }
     """
     if not image_bytes:
         raise ValueError("Empty image data")
+
+    if load_engine() is None:
+        return _unavailable_result()
+
     try:
         image = Image.open(io.BytesIO(image_bytes))
         raw = _predict_pil(image)
+        if raw.get("class") == "unavailable":
+            return raw
+
         actual_class = raw["class"]
         confidence = raw["confidence"]
 
@@ -174,22 +234,34 @@ def predict_image_bytes(image_bytes: bytes) -> dict:
             })
 
         return result
-    except (ModelNotFoundError, ModelLoadError):
-        raise
+    except ModelLoadError:
+        return _unavailable_result()
     except Exception as e:
         raise ValueError(f"Could not decode image bytes: {e}") from e
 
 
 def model_status() -> dict:
+    """Backward-compatible status helper used by main.py health checks."""
+    status = get_model_status()
+    if not status["loaded"]:
+        return {
+            "loaded": False,
+            "path": status.get("path"),
+            "error": MODEL_UNAVAILABLE_MESSAGE,
+        }
     try:
         bundle = load_engine()
+        if bundle is None:
+            return {
+                "loaded": False,
+                "path": status.get("path"),
+                "error": MODEL_UNAVAILABLE_MESSAGE,
+            }
         return {
             "loaded": True,
-            "path": str(MODEL_PATH.resolve()),
+            "path": status["path"],
             "classes": bundle["class_names"],
             "device": str(bundle["device"]),
         }
-    except ModelNotFoundError as e:
-        return {"loaded": False, "path": str(MODEL_PATH), "error": str(e)}
     except ModelLoadError as e:
-        return {"loaded": False, "path": str(MODEL_PATH), "error": str(e)}
+        return {"loaded": False, "path": status.get("path"), "error": str(e)}

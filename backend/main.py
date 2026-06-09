@@ -14,6 +14,7 @@ if hasattr(sys.stdout, "reconfigure"):
     except (OSError, ValueError):
         pass
 
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -81,7 +82,13 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5500",
+        "http://localhost:3000",
+        "http://localhost:8001",
+        "https://chandangowdakt.github.io",
+        "*",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -118,4 +125,5 @@ if FRONTEND_DIR.exists():
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="127.0.0.1", port=8001, reload=False)
+    port = int(os.environ.get("PORT", 8001))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
