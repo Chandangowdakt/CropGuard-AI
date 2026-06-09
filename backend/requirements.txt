@@ -1,0 +1,27 @@
+# CropGuard AI — Python dependencies
+#
+# Quick install (from the backend folder):
+#   pip install fastapi uvicorn sqlalchemy pydantic python-jose passlib bcrypt python-multipart pillow torch torchvision python-dotenv aiofiles
+#
+# Or install pinned versions from this file:
+#   pip install -r requirements.txt
+#
+# Core packages: fastapi uvicorn sqlalchemy pydantic python-jose passlib bcrypt
+#                python-multipart pillow torch torchvision python-dotenv aiofiles
+
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+sqlalchemy>=2.0.36
+pydantic>=2.10.0
+pydantic-settings>=2.6.0
+email-validator>=2.2.0
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+bcrypt>=4.2.0
+python-multipart>=0.0.12
+aiofiles>=24.1.0
+torch>=2.0.0
+torchvision>=0.15.0
+Pillow>=10.0.0
+python-dotenv>=1.0.0
+requests>=2.31.0
