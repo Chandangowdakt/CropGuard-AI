@@ -52,8 +52,62 @@ def _migrate_farms():
             conn.execute(text("ALTER TABLE farms ADD COLUMN description TEXT DEFAULT ''"))
 
 
+def _migrate_detections():
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    if "detections" not in inspector.get_table_names():
+        return
+    columns = {c["name"] for c in inspector.get_columns("detections")}
+    with engine.begin() as conn:
+        if "session_id" not in columns:
+            conn.execute(text("ALTER TABLE detections ADD COLUMN session_id INTEGER"))
+        if "latitude" not in columns:
+            conn.execute(text("ALTER TABLE detections ADD COLUMN latitude REAL"))
+        if "longitude" not in columns:
+            conn.execute(text("ALTER TABLE detections ADD COLUMN longitude REAL"))
+
+
+def _backfill_manager_assignments():
+    """Copy legacy Farm.manager_id links into manager_farm_assignments."""
+    from sqlalchemy import inspect
+
+    from models import Farm, ManagerFarmAssignment
+
+    inspector = inspect(engine)
+    if "manager_farm_assignments" not in inspector.get_table_names():
+        return
+    if "farms" not in inspector.get_table_names():
+        return
+
+    db = SessionLocal()
+    try:
+        farms = db.query(Farm).filter(Farm.manager_id.isnot(None)).all()
+        for farm in farms:
+            exists = (
+                db.query(ManagerFarmAssignment)
+                .filter(
+                    ManagerFarmAssignment.manager_id == farm.manager_id,
+                    ManagerFarmAssignment.farm_id == farm.id,
+                )
+                .first()
+            )
+            if not exists:
+                db.add(
+                    ManagerFarmAssignment(
+                        manager_id=farm.manager_id,
+                        farm_id=farm.id,
+                    )
+                )
+        db.commit()
+    finally:
+        db.close()
+
+
 def init_db():
-    from models import Alert, Detection, Farm, User  # noqa: F401
+    from models import Alert, Detection, Farm, ManagerFarmAssignment, ScanSession, User  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
     _migrate_farms()
+    _migrate_detections()
+    _backfill_manager_assignments()

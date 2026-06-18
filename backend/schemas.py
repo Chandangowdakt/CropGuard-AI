@@ -131,6 +131,106 @@ class DetectionResult(BaseModel):
     message: str
 
 
+class ScanFrameOut(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    predicted_class: str = Field(
+        validation_alias=AliasChoices("class", "predicted_class", "class_name"),
+        serialization_alias="class",
+    )
+    confidence: float
+    is_problem: bool
+    actual_class: str | None = None
+    message: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    analyzed_at: datetime | None = None
+
+
+class ScanFrameAnalyzeOut(BaseModel):
+    """Minimal live-frame inference response (no DB writes)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    predicted_class: str = Field(
+        validation_alias=AliasChoices("class", "predicted_class", "class_name"),
+        serialization_alias="class",
+    )
+    confidence: float
+    is_problem: bool
+
+
+class ScanSessionCreate(BaseModel):
+    farm_id: int
+    started_at: datetime | None = None
+
+
+class ScanSessionCreateOut(BaseModel):
+    session_id: int
+
+
+class ScanBulkDetectionItem(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    predicted_class: str = Field(
+        validation_alias=AliasChoices("class", "predicted_class"),
+        serialization_alias="class",
+    )
+    confidence: float
+    timestamp: datetime
+    lat: float | None = None
+    lon: float | None = None
+    image_base64: str | None = None
+
+
+class ScanBulkDetectionsIn(BaseModel):
+    detections: list[ScanBulkDetectionItem]
+
+
+class ScanBulkDetectionsOut(BaseModel):
+    saved_count: int
+    flagged_count: int
+
+
+class ScanSessionSummaryOut(BaseModel):
+    session_id: int
+    farm_id: int
+    manager_id: int
+    status: str
+    total_scanned: int
+    healthy_count: int
+    diseased_count: int
+    pest_count: int
+    water_stressed_count: int
+    flagged_count: int
+    started_at: datetime
+    completed_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class ScanDetectionIn(BaseModel):
+    predicted_class: str
+    actual_class: str | None = None
+    confidence: float
+    latitude: float | None = None
+    longitude: float | None = None
+    timestamp: datetime
+    image_base64: str | None = None
+
+
+class ScanSessionIn(BaseModel):
+    farm_id: int
+    detections: list[ScanDetectionIn]
+
+
+class ScanSessionOut(BaseModel):
+    message: str
+    detections_saved: int
+    alerts_created: int
+    farm_id: int
+
+
 class FarmSummaryOut(BaseModel):
     farm_id: int
     total_detections: int
@@ -260,3 +360,98 @@ class ActivityFeedItem(BaseModel):
 
 class RoleChangeRequest(BaseModel):
     role: Literal["farmer", "manager"]
+
+
+class AdminScanSessionOut(BaseModel):
+    session_id: int
+    farm_id: int
+    farm_name: str
+    manager_id: int
+    manager_name: str
+    started_at: datetime
+    completed_at: datetime | None
+    total_scanned: int
+    issues_found: int
+    status: str
+
+
+class AdminFlaggedDetectionOut(BaseModel):
+    id: int
+    predicted_class: str
+    confidence: float
+    timestamp: datetime
+    latitude: float | None = None
+    longitude: float | None = None
+
+
+class AdminScanSessionDetailOut(AdminScanSessionOut):
+    healthy_count: int
+    diseased_count: int
+    pest_count: int
+    water_stressed_count: int
+    flagged_detections: list[AdminFlaggedDetectionOut]
+
+
+class AdminManagerOverviewOut(BaseModel):
+    manager_id: int
+    manager_name: str
+    assigned_farms: list[str]
+    assigned_farm_count: int
+    scans_this_week: int
+    issues_this_week: int
+    last_scan_at: datetime | None
+
+
+class AdminFarmHealthComparisonOut(BaseModel):
+    farm_id: int
+    farm_name: str
+    health_score: float
+    health_status: Literal["healthy", "warning", "critical"]
+    trend: Literal["improving", "worsening", "stable"]
+    last_manager_name: str | None
+    last_scanned_at: datetime | None
+
+
+class ManagerAssignRequest(BaseModel):
+    manager_id: int
+    farm_ids: list[int]
+
+
+class ManagerAssignOut(BaseModel):
+    manager_id: int
+    assigned_farm_ids: list[int]
+    message: str
+
+
+class ManagerAssignmentsOut(BaseModel):
+    manager_id: int
+    farm_ids: list[int]
+
+
+class DailyDigestFarmBreakdown(BaseModel):
+    farm_id: int
+    farm_name: str
+    sessions_count: int
+    plants_scanned: int
+    issues_found: int
+    problem_rate: float
+
+
+class AdminDailyDigestOut(BaseModel):
+    period_start: datetime
+    period_end: datetime
+    farms_scanned: int
+    managers_active: int
+    total_sessions: int
+    total_plants_checked: int
+    total_issues_found: int
+    breakdown_by_farm: list[DailyDigestFarmBreakdown]
+    top_concerning_farms: list[DailyDigestFarmBreakdown]
+    manager_names: list[str] = []
+
+
+class DailyDigestSendOut(BaseModel):
+    digest: AdminDailyDigestOut
+    email_sent: bool
+    admin_recipients: int
+    message: str

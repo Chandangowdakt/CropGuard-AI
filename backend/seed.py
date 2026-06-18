@@ -21,7 +21,7 @@ from sqlalchemy import inspect, text
 
 from auth import hash_password
 from database import SessionLocal, engine, init_db
-from models import Detection, Farm, User
+from models import Detection, Farm, ManagerFarmAssignment, User
 
 STORAGE = Path(__file__).resolve().parent / "storage" / "uploads"
 STORAGE.mkdir(parents=True, exist_ok=True)
@@ -105,6 +105,27 @@ def seed():
                 db.flush()
                 farms.append(f)
                 print(f"  ✓  Created farm: {name}")
+        db.commit()
+
+        # ── Manager farm assignments ──────────────────────────────────────────
+        for farm in farms:
+            if not farm.manager_id:
+                continue
+            exists = (
+                db.query(ManagerFarmAssignment)
+                .filter(
+                    ManagerFarmAssignment.manager_id == farm.manager_id,
+                    ManagerFarmAssignment.farm_id == farm.id,
+                )
+                .first()
+            )
+            if not exists:
+                db.add(
+                    ManagerFarmAssignment(
+                        manager_id=farm.manager_id,
+                        farm_id=farm.id,
+                    )
+                )
         db.commit()
 
         # ── Sample detections ─────────────────────────────────────────────────

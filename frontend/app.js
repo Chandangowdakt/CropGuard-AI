@@ -1096,25 +1096,25 @@ function AnalysisPage({ farms, farmId, onFarmChange, onAnalyzed }) {
     }
   }
 
-  const cls = result?.prediction?.class || result?.prediction?.predicted_class;
-  const conf = result?.prediction?.confidence ?? 0;
-  const display = CLASS_DISPLAY[cls] || CLASS_DISPLAY.healthy;
+  const cls2 = result?.prediction?.class || result?.prediction?.predicted_class;
+  const conf2 = result?.prediction?.confidence ?? 0;
+  const display = CLASS_DISPLAY[cls2] || CLASS_DISPLAY.healthy;
 
   useEffect(() => {
     if (!result || analyzing) return;
-    const key = `${cls || "unknown"}_${Number(conf || 0).toFixed(3)}_${result.analyzed_at || ""}`;
+    const key = `${cls2 || "unknown"}_${Number(conf2 || 0).toFixed(3)}_${result.analyzed_at || ""}`;
     if (lastToastRef.current === key) return;
     lastToastRef.current = key;
 
-    if (cls === "healthy") {
+    if (cls2 === "healthy") {
       pushToast({ type: "success", message: "Analysis complete — Healthy plant detected" });
-    } else if (cls === "diseased") {
+    } else if (cls2 === "diseased") {
       pushToast({ type: "danger", message: "ALERT — Diseased plant detected at Hosahalli Block A" });
     }
-  }, [result, analyzing, cls, conf, pushToast]);
+  }, [result, analyzing, cls2, conf2, pushToast]);
 
   async function copyShareText() {
-    const shareText = `${display.label} detected at ${Number(conf || 0).toFixed(1)}% confidence — CropGuard AI`;
+    const shareText = `${display.label} detected at ${Number(conf2 || 0).toFixed(1)}% confidence — CropGuard AI`;
     try {
       await navigator.clipboard.writeText(shareText);
       pushToast({ type: "success", message: "Copied to clipboard" });
@@ -1232,9 +1232,9 @@ function AnalysisPage({ farms, farmId, onFarmChange, onAnalyzed }) {
 
             <div className={`analysis-result-card ${display.css}`}>
               <div className="giant-label">{display.label}</div>
-              <div className="giant-confidence">{conf.toFixed(1)}%</div>
+              <div className="giant-confidence">{conf2.toFixed(1)}%</div>
               <div className="confidence-bar-track">
-                <div className="confidence-bar-fill" style={{ width: `${Math.min(conf, 100)}%`, background: display.bar }} />
+                <div className="confidence-bar-fill" style={{ width: `${Math.min(conf2, 100)}%`, background: display.bar }} />
               </div>
               <div className="analysis-timestamp">
                 {result.analyzed_at
@@ -1245,7 +1245,7 @@ function AnalysisPage({ farms, farmId, onFarmChange, onAnalyzed }) {
 
             <div className="analysis-action-panel card">
               <h4>Recommendation</h4>
-              <p>{ANALYSIS_ADVICE[cls] || ANALYSIS_ADVICE.healthy}</p>
+              <p>{ANALYSIS_ADVICE[cls2] || ANALYSIS_ADVICE.healthy}</p>
               {selectedFarm && (
                 <p className="analysis-farm-note">Farm: <strong>{selectedFarm.name}</strong></p>
               )}
@@ -1328,10 +1328,10 @@ function QuickAnalysis({ farmId, farms, onAnalyzed }) {
         headers: { Authorization: `Bearer ${token}` },
         body: analyzeFd,
       });
-      const preview = await analyzeRes.json();
-      if (!analyzeRes.ok) throw new Error(preview.detail || "Analysis failed");
+      const preview2 = await analyzeRes.json();
+      if (!analyzeRes.ok) throw new Error(preview2.detail || "Analysis failed");
 
-      const pred = preview.prediction || {};
+      const pred = preview2.prediction || {};
       const cls = pred.class || pred.predicted_class;
       const saveClass = pred.actual_class || cls;
       const conf = pred.confidence;
@@ -1376,11 +1376,11 @@ function QuickAnalysis({ farmId, farms, onAnalyzed }) {
     }
   }
 
-  const pred = result?.prediction || {};
-  const cls = pred.class || result?.detection?.predicted_class;
-  const actualClass = pred.actual_class || cls;
-  const conf = pred.confidence ?? result?.detection?.confidence;
-  const isUncertain = cls === "uncertain" || (conf != null && conf < 75);
+  const pred2 = result?.prediction || {};
+  const cls2 = pred2.class || result?.detection?.predicted_class;
+  const actualClass = pred2.actual_class || cls2;
+  const conf2 = pred2.confidence ?? result?.detection?.confidence;
+  const isUncertain = cls2 === "uncertain" || (conf2 != null && conf2 < 75);
   let resultClass = "result-healthy";
   if (isUncertain) resultClass = "result-uncertain";
   else if (actualClass === "water_stressed") resultClass = "result-water";
@@ -1433,8 +1433,8 @@ function QuickAnalysis({ farmId, farms, onAnalyzed }) {
           {isUncertain ? (
             <>
               <p className="result-uncertain-title">Uncertain — Take a closer photo of the leaf for better accuracy</p>
-              {pred.message && (
-                <div style={{ fontSize: "0.9rem", color: "var(--muted)", marginBottom: 8 }}>{pred.message}</div>
+              {pred2.message && (
+                <div style={{ fontSize: "0.9rem", color: "var(--muted)", marginBottom: 8 }}>{pred2.message}</div>
               )}
               <div className="big-label">
                 <ClassBadge cls={actualClass} /> Model guess: {actualClass?.replace(/_/g, " ")}
@@ -1446,7 +1446,7 @@ function QuickAnalysis({ farmId, farms, onAnalyzed }) {
               <div className="big-label"><ClassBadge cls={actualClass} /> {actualClass?.replace(/_/g, " ")}</div>
             </>
           )}
-          <div className="conf">Confidence: <strong>{conf?.toFixed(1)}%</strong></div>
+          <div className="conf">Confidence: <strong>{conf2?.toFixed(1)}%</strong></div>
           {result.alert_created && !isUncertain && (
             <p style={{ marginTop: 12, color: "var(--danger)", fontWeight: 700 }}>⚠ Alert logged to your dashboard</p>
           )}
@@ -1805,7 +1805,198 @@ function AdminTrendsChart({ trends }) {
   );
 }
 
-function AdminPage() {
+function AdminFarmHealthChart({ farms, onFarmClick }) {
+  if (!farms?.length) {
+    return <p style={{ color: "var(--muted)" }}>No farm health data available.</p>;
+  }
+  const maxScore = 100;
+
+  return (
+    <div className="admin-health-bars">
+      {farms.map((f) => {
+        const pct = Math.min(100, Math.max(0, f.health_score));
+        const barClass = f.health_status === "healthy" ? "bar-good" : f.health_status === "warning" ? "bar-warn" : "bar-bad";
+        const trendIcon = f.trend === "improving" ? "↑" : f.trend === "worsening" ? "↓" : "→";
+        return (
+          <button
+            type="button"
+            key={f.farm_id}
+            className="admin-health-bar-row"
+            onClick={() => onFarmClick?.(f.farm_id)}
+            title={`${f.farm_name} — click to view farm`}
+          >
+            <div className="admin-health-bar-label">
+              <span className="admin-health-bar-name">{f.farm_name}</span>
+              <span className={`admin-trend admin-trend-${f.trend}`}>{trendIcon} {f.trend}</span>
+            </div>
+            <div className="admin-health-bar-track">
+              <div className={`admin-health-bar-fill ${barClass}`} style={{ width: `${(pct / maxScore) * 100}%` }} />
+            </div>
+            <div className="admin-health-bar-meta">
+              <strong>{Math.round(pct)}%</strong>
+              {f.last_manager_name && (
+                <span className="admin-health-bar-manager">{f.last_manager_name} · {f.last_scanned_at ? timeAgo(f.last_scanned_at) : "—"}</span>
+              )}
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function ScanSessionDetailModal({ sessionId, onClose }) {
+  const [detail, setDetail] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!sessionId) return;
+    setLoading(true);
+    api(`/api/admin/scan-sessions/${sessionId}`)
+      .then(setDetail)
+      .catch((e) => setError(e.message))
+      .finally(() => setLoading(false));
+  }, [sessionId]);
+
+  if (!sessionId) return null;
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-card admin-session-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h3>Scan Session #{sessionId}</h3>
+          <button type="button" className="modal-close" onClick={onClose}>×</button>
+        </div>
+        {loading && <Spinner label="Loading session…" />}
+        {error && <ErrorBox message={error} />}
+        {detail && (
+          <div className="admin-session-detail">
+            <div className="admin-session-summary-grid">
+              <div><span className="insight-label">Farm</span><strong>{detail.farm_name}</strong></div>
+              <div><span className="insight-label">Manager</span><strong>{detail.manager_name}</strong></div>
+              <div><span className="insight-label">Date</span><strong>{formatTimestamp(detail.started_at)}</strong></div>
+              <div><span className="insight-label">Status</span><strong>{detail.status}</strong></div>
+              <div><span className="insight-label">Scanned</span><strong>{detail.total_scanned}</strong></div>
+              <div><span className="insight-label">Issues</span><strong className="text-warn">{detail.issues_found}</strong></div>
+            </div>
+            <div className="admin-session-counts">
+              <span className="count-pill pill-healthy">Healthy {detail.healthy_count}</span>
+              <span className="count-pill pill-diseased">Diseased {detail.diseased_count}</span>
+              <span className="count-pill pill-pest">Pest {detail.pest_count}</span>
+              <span className="count-pill pill-water">Water {detail.water_stressed_count}</span>
+            </div>
+            <h4 className="admin-session-flagged-title">Flagged plants ({detail.flagged_detections?.length || 0})</h4>
+            {detail.flagged_detections?.length === 0 ? (
+              <p style={{ color: "var(--muted)" }}>No flagged detections saved for this session.</p>
+            ) : (
+              <ul className="admin-flagged-list">
+                {detail.flagged_detections.map((d) => (
+                  <li key={d.id} className="admin-flagged-item">
+                    <DetectionThumb detectionId={d.id} />
+                    <div>
+                      <div className="admin-flagged-class">{formatClassLabel(d.predicted_class)}</div>
+                      <div className="admin-flagged-meta">{d.confidence.toFixed(1)}% · {formatTimestamp(d.timestamp)}</div>
+                      {(d.latitude != null || d.longitude != null) && (
+                        <div className="admin-flagged-gps">📍 {d.latitude?.toFixed(5)}, {d.longitude?.toFixed(5)}</div>
+                      )}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ManagerAssignmentPanel({ managers, allFarms, onAssigned }) {
+  const [selectedManagerId, setSelectedManagerId] = useState("");
+  const [checkedFarms, setCheckedFarms] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+
+  useEffect(() => {
+    if (!selectedManagerId) {
+      setCheckedFarms({});
+      return;
+    }
+    api(`/api/admin/manager-assignments/${selectedManagerId}`)
+      .then((data) => {
+        const map = {};
+        (data.farm_ids || []).forEach((id) => { map[id] = true; });
+        setCheckedFarms(map);
+      })
+      .catch(() => setCheckedFarms({}));
+  }, [selectedManagerId]);
+
+  function toggleFarm(farmId) {
+    setCheckedFarms((prev) => ({ ...prev, [farmId]: !prev[farmId] }));
+  }
+
+  async function handleAssign() {
+    if (!selectedManagerId) return;
+    setSaving(true);
+    setError("");
+    setSuccess("");
+    const farmIds = Object.entries(checkedFarms).filter(([, v]) => v).map(([k]) => Number(k));
+    try {
+      const res = await api("/api/admin/assign-manager", {
+        method: "POST",
+        body: JSON.stringify({ manager_id: Number(selectedManagerId), farm_ids: farmIds }),
+      });
+      setSuccess(res.message || "Assignments updated");
+      onAssigned?.();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="admin-assign-panel">
+      <div className="admin-assign-controls">
+        <label>
+          <span className="insight-label">Select manager</span>
+          <select value={selectedManagerId} onChange={(e) => setSelectedManagerId(e.target.value)}>
+            <option value="">Choose a manager…</option>
+            {managers.map((m) => (
+              <option key={m.id} value={m.id}>{m.name} ({m.email})</option>
+            ))}
+          </select>
+        </label>
+        <button type="button" className="btn btn-primary" disabled={!selectedManagerId || saving} onClick={handleAssign}>
+          {saving ? "Assigning…" : "Assign"}
+        </button>
+      </div>
+      <ErrorBox message={error} />
+      {success && <div className="success-banner">{success}</div>}
+      {selectedManagerId ? (
+        <div className="admin-farm-checklist">
+          {allFarms.map((f) => (
+            <label key={f.id} className="admin-farm-check">
+              <input
+                type="checkbox"
+                checked={!!checkedFarms[f.id]}
+                onChange={() => toggleFarm(f.id)}
+              />
+              <span>{f.name}</span>
+              <span className="admin-farm-check-loc">{f.location}</span>
+            </label>
+          ))}
+        </div>
+      ) : (
+        <p style={{ color: "var(--muted)", marginTop: 12 }}>Select a manager to assign farms.</p>
+      )}
+    </div>
+  );
+}
+
+function AdminPage({ onNavigateToFarm }) {
   const [stats, setStats] = useState(null);
   const [allFarms, setAllFarms] = useState([]);
   const [allUsers, setAllUsers] = useState([]);
@@ -1814,19 +2005,35 @@ function AdminPage() {
   const [error, setError] = useState("");
   const [farmSearch, setFarmSearch] = useState("");
   const [roleChanging, setRoleChanging] = useState(null);
+  const [scanSessions, setScanSessions] = useState([]);
+  const [managersOverview, setManagersOverview] = useState([]);
+  const [farmHealth, setFarmHealth] = useState([]);
+  const [scanFarmFilter, setScanFarmFilter] = useState("");
+  const [scanManagerFilter, setScanManagerFilter] = useState("");
+  const [selectedSessionId, setSelectedSessionId] = useState(null);
+  const [digest, setDigest] = useState(null);
+  const [digestLoading, setDigestLoading] = useState(false);
+  const [digestSending, setDigestSending] = useState(false);
+  const [digestMessage, setDigestMessage] = useState("");
 
   const loadAdmin = useCallback(async () => {
     try {
-      const [statsData, farmsData, usersData, feedData] = await Promise.all([
+      const [statsData, farmsData, usersData, feedData, sessionsData, managersData, healthData] = await Promise.all([
         api("/api/admin/stats"),
         api("/api/admin/all-farms"),
         api("/api/admin/all-users"),
         api("/api/admin/activity-feed"),
+        api("/api/admin/scan-sessions"),
+        api("/api/admin/managers-overview"),
+        api("/api/admin/farms-health-comparison"),
       ]);
       setStats(statsData);
       setAllFarms(farmsData);
       setAllUsers(usersData);
       setActivity(feedData);
+      setScanSessions(sessionsData);
+      setManagersOverview(managersData);
+      setFarmHealth(healthData);
       setError("");
     } catch (err) {
       setError(err.message);
@@ -1875,6 +2082,53 @@ function AdminPage() {
     if (!q) return true;
     return f.name.toLowerCase().includes(q) || f.location.toLowerCase().includes(q);
   });
+
+  const managers = allUsers.filter((u) => u.role === "manager");
+
+  const filteredScanSessions = scanSessions.filter((s) => {
+    if (scanFarmFilter && String(s.farm_id) !== scanFarmFilter) return false;
+    if (scanManagerFilter && String(s.manager_id) !== scanManagerFilter) return false;
+    return true;
+  });
+
+  const scanStatusClass = (status) => {
+    if (status === "completed") return "status-healthy";
+    if (status === "discarded") return "status-muted";
+    return "status-warn";
+  };
+
+  async function loadDailyDigest() {
+    setDigestLoading(true);
+    setDigestMessage("");
+    try {
+      const data = await api("/api/admin/daily-digest");
+      setDigest(data);
+    } catch (err) {
+      setDigestMessage(err.message);
+    } finally {
+      setDigestLoading(false);
+    }
+  }
+
+  async function sendDailyDigest() {
+    setDigestSending(true);
+    setDigestMessage("");
+    try {
+      const res = await api("/api/admin/daily-digest/send", { method: "POST" });
+      setDigest(res.digest);
+      setDigestMessage(res.message);
+    } catch (err) {
+      setDigestMessage(err.message);
+    } finally {
+      setDigestSending(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!loading && stats) {
+      loadDailyDigest();
+    }
+  }, [loading, stats]);
 
   if (loading && !stats) return <Spinner label="Loading admin dashboard…" />;
 
@@ -1954,6 +2208,155 @@ function AdminPage() {
             ))}
           </ul>
         </div>
+      </div>
+
+      <div className="card admin-table-card">
+        <div className="admin-table-header">
+          <div className="card-title">📬 Daily Scan Digest</div>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={digestSending}
+            onClick={sendDailyDigest}
+          >
+            {digestSending ? "Sending…" : "Send Daily Digest Now"}
+          </button>
+        </div>
+        <p style={{ color: "var(--muted)", marginBottom: 12 }}>
+          Consolidated report of all manager scan sessions from the last 24 hours, emailed to every admin.
+        </p>
+        {digestMessage && (
+          <div className={digestMessage.includes("emailed") ? "success-banner" : "error-banner-soft"}>
+            {digestMessage}
+          </div>
+        )}
+        {digestLoading && !digest ? (
+          <Spinner label="Loading digest…" />
+        ) : digest ? (
+          <div className="admin-digest-preview">
+            <div className="admin-digest-stats">
+              <div><span className="insight-label">Farms scanned</span><strong>{digest.farms_scanned}</strong></div>
+              <div><span className="insight-label">Managers active</span><strong>{digest.managers_active}</strong></div>
+              <div><span className="insight-label">Plants checked</span><strong>{digest.total_plants_checked}</strong></div>
+              <div><span className="insight-label">Issues found</span><strong className={digest.total_issues_found > 0 ? "text-warn" : ""}>{digest.total_issues_found}</strong></div>
+            </div>
+            {digest.top_concerning_farms?.length > 0 && (
+              <div className="admin-digest-concerning">
+                <span className="insight-label">Top concerning farms</span>
+                <ul>
+                  {digest.top_concerning_farms.map((f) => (
+                    <li key={f.farm_id}>
+                      <strong>{f.farm_name}</strong> — {f.problem_rate}% issues ({f.issues_found}/{f.plants_scanned} plants)
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {!digest.total_sessions && (
+              <p style={{ color: "var(--muted)", marginTop: 12 }}>No completed scan sessions in the last 24 hours.</p>
+            )}
+          </div>
+        ) : null}
+      </div>
+
+      <div className="card admin-table-card">
+        <div className="admin-table-header">
+          <div className="card-title">📷 Live Scan Activity</div>
+          <div className="admin-scan-filters">
+            <select value={scanFarmFilter} onChange={(e) => setScanFarmFilter(e.target.value)}>
+              <option value="">All farms</option>
+              {allFarms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+            </select>
+            <select value={scanManagerFilter} onChange={(e) => setScanManagerFilter(e.target.value)}>
+              <option value="">All managers</option>
+              {managers.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+            </select>
+          </div>
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Manager</th>
+                <th>Farm</th>
+                <th>Date</th>
+                <th>Plants Scanned</th>
+                <th>Issues Found</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredScanSessions.length === 0 ? (
+                <tr><td colSpan="6" style={{ textAlign: "center", color: "var(--muted)" }}>No scan sessions yet</td></tr>
+              ) : filteredScanSessions.map((s) => (
+                <tr
+                  key={s.session_id}
+                  className="admin-scan-row"
+                  onClick={() => setSelectedSessionId(s.session_id)}
+                  title="Click to view flagged plants"
+                >
+                  <td>{s.manager_name}</td>
+                  <td><strong>{s.farm_name}</strong></td>
+                  <td>{formatTimestamp(s.completed_at || s.started_at)}</td>
+                  <td>{s.total_scanned}</td>
+                  <td className={s.issues_found > 0 ? "text-warn" : ""}>{s.issues_found}</td>
+                  <td><span className={`status-badge ${scanStatusClass(s.status)}`}>{s.status}</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="admin-grid-2">
+        <div className="card">
+          <div className="card-title">👔 Manager Performance</div>
+          {managersOverview.length === 0 ? (
+            <p style={{ color: "var(--muted)" }}>No managers registered yet.</p>
+          ) : (
+            <div className="admin-manager-cards">
+              {managersOverview.map((m) => (
+                <div key={m.manager_id} className="admin-manager-card">
+                  <div className="admin-manager-card-head">
+                    <strong>{m.manager_name}</strong>
+                    <span className="admin-manager-farms">{m.assigned_farm_count} farm{m.assigned_farm_count !== 1 ? "s" : ""}</span>
+                  </div>
+                  <div className="admin-manager-card-farms">
+                    {m.assigned_farms.length ? m.assigned_farms.join(", ") : "No farms assigned"}
+                  </div>
+                  <div className="admin-manager-card-stats">
+                    <div>
+                      <span className="insight-label">Scans this week</span>
+                      <strong>{m.scans_this_week}</strong>
+                    </div>
+                    <div>
+                      <span className="insight-label">Issues caught</span>
+                      <strong className={m.issues_this_week > 0 ? "text-warn" : ""}>{m.issues_this_week}</strong>
+                    </div>
+                    <div>
+                      <span className="insight-label">Last scan</span>
+                      <strong>{m.last_scan_at ? timeAgo(m.last_scan_at) : "Never"}</strong>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="card">
+          <div className="card-title">📊 Farm Health Comparison</div>
+          <p className="admin-chart-hint">Click a bar to open that farm&apos;s detail page.</p>
+          <AdminFarmHealthChart farms={farmHealth} onFarmClick={onNavigateToFarm} />
+        </div>
+      </div>
+
+      <div className="card admin-table-card">
+        <div className="card-title">🔗 Manager Assignment</div>
+        <p style={{ color: "var(--muted)", marginBottom: 12 }}>
+          Assign which farms each manager is responsible for. Managers only see assigned farms in their dropdown.
+        </p>
+        <ManagerAssignmentPanel managers={managers} allFarms={allFarms} onAssigned={loadAdmin} />
       </div>
 
       <div className="card admin-table-card">
@@ -2048,6 +2451,13 @@ function AdminPage() {
           </table>
         </div>
       </div>
+
+      {selectedSessionId && (
+        <ScanSessionDetailModal
+          sessionId={selectedSessionId}
+          onClose={() => setSelectedSessionId(null)}
+        />
+      )}
     </div>
   );
 }
@@ -2359,11 +2769,400 @@ function ReportsPage({ farms, farmId, onFarmChange }) {
   );
 }
 
+// ── Live Scan page ────────────────────────────────────────────────────────────
+const LIVE_SCAN_INTERVAL_MS = 2500;
+const LIVE_SCAN_ISSUE_CLASSES = new Set(["diseased", "pest_affected", "water_stressed"]);
+
+function liveScanBorderClass(predClass, actualClass) {
+  const c = actualClass || predClass;
+  if (!predClass || predClass === "unavailable" || predClass === "uncertain") return "live-border-gray";
+  if (c === "healthy") return "live-border-green";
+  if (c === "diseased" || c === "pest_affected") return "live-border-red";
+  if (c === "water_stressed") return "live-border-orange";
+  return "live-border-gray";
+}
+
+function liveScanDisplayLabel(predClass, actualClass) {
+  const c = actualClass || predClass;
+  if (predClass === "unavailable") return "AI UNAVAILABLE";
+  if (predClass === "uncertain") return `UNCERTAIN — ${(c || "unknown").replace(/_/g, " ").toUpperCase()}`;
+  return (c || "unknown").replace(/_/g, " ").toUpperCase();
+}
+
+function isLiveScanIssue(predClass, actualClass) {
+  if (predClass === "uncertain" || predClass === "unavailable") return false;
+  const c = actualClass || predClass;
+  return LIVE_SCAN_ISSUE_CLASSES.has(c);
+}
+
+function captureVideoFrameBlob(videoEl, canvasEl) {
+  const canvas = canvasEl;
+  canvas.width = videoEl.videoWidth || 640;
+  canvas.height = videoEl.videoHeight || 480;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+  return new Promise((resolve) => {
+    canvas.toBlob((blob) => resolve(blob), "image/jpeg", 0.85);
+  });
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
+  const [phase, setPhase] = useState("idle");
+  const [error, setError] = useState("");
+  const [gps, setGps] = useState(null);
+  const [current, setCurrent] = useState({ className: "", actualClass: "", confidence: 0 });
+  const [sessionDetections, setSessionDetections] = useState([]);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitMessage, setSubmitMessage] = useState("");
+
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const streamRef = useRef(null);
+  const processingRef = useRef(false);
+  const intervalRef = useRef(null);
+  const gpsRef = useRef(null);
+  const sessionRef = useRef([]);
+
+  const selectedFarm = farms.find((f) => String(f.id) === String(farmId));
+  const managerName = user?.role === "manager"
+    ? user.name
+    : user?.role === "admin"
+      ? "Growteq Ops"
+      : "Growteq Field Manager";
+
+  const plantsScanned = sessionDetections.length;
+  const issuesFound = sessionDetections.filter((d) => d.isIssue).length;
+
+  const breakdown = sessionDetections.reduce((acc, d) => {
+    const c = d.actualClass || d.className;
+    if (c === "healthy") acc.healthy += 1;
+    else if (c === "diseased") acc.diseased += 1;
+    else if (c === "pest_affected") acc.pest += 1;
+    else if (c === "water_stressed") acc.water += 1;
+    else acc.other += 1;
+    return acc;
+  }, { healthy: 0, diseased: 0, pest: 0, water: 0, other: 0 });
+
+  const flaggedPlants = sessionDetections.filter((d) => d.isIssue);
+
+  const stopCamera = useCallback(() => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+  }, []);
+
+  useEffect(() => () => stopCamera(), [stopCamera]);
+
+  useEffect(() => {
+    sessionRef.current = sessionDetections;
+  }, [sessionDetections]);
+
+  const analyzeFrame = useCallback(async () => {
+    if (processingRef.current || phase !== "scanning") return;
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas || video.readyState < 2) return;
+
+    processingRef.current = true;
+    try {
+      const blob = await captureVideoFrameBlob(video, canvas);
+      if (!blob) return;
+
+      const thumbUrl = URL.createObjectURL(blob);
+      const pos = gpsRef.current;
+      const fd = new FormData();
+      fd.append("file", blob, "frame.jpg");
+      fd.append("farm_id", farmId);
+      if (pos?.lat != null) fd.append("latitude", String(pos.lat));
+      if (pos?.lon != null) fd.append("longitude", String(pos.lon));
+
+      const token = getToken();
+      const res = await fetch(`${API_BASE}/api/scan/analyze-frame`, {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: fd,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Frame analysis failed");
+
+      const predClass = data.class_name || data.class || "unavailable";
+      const actualClass = data.actual_class || predClass;
+      const confidence = Number(data.confidence ?? 0);
+      const isIssue = isLiveScanIssue(predClass, actualClass);
+
+      setCurrent({ className: predClass, actualClass, confidence });
+
+      let imageBase64 = null;
+      if (isIssue) {
+        imageBase64 = await blobToBase64(blob);
+      }
+
+      const entry = {
+        id: `${Date.now()}_${Math.random().toString(16).slice(2)}`,
+        className: predClass,
+        actualClass,
+        confidence,
+        isIssue,
+        lat: data.latitude ?? pos?.lat ?? null,
+        lon: data.longitude ?? pos?.lon ?? null,
+        timestamp: data.analyzed_at || new Date().toISOString(),
+        thumbUrl,
+        imageBase64,
+      };
+      setSessionDetections((prev) => [...prev, entry]);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      processingRef.current = false;
+    }
+  }, [farmId, phase]);
+
+  async function startScan() {
+    if (!farmId) {
+      setError("Select a farm first");
+      return;
+    }
+    setError("");
+    setSubmitMessage("");
+    setSessionDetections([]);
+    setCurrent({ className: "", actualClass: "", confidence: 0 });
+
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const coords = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+          setGps(coords);
+          gpsRef.current = coords;
+        },
+        () => {
+          setGps(null);
+          gpsRef.current = null;
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 5000 }
+      );
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" } },
+        audio: false,
+      });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+      setPhase("scanning");
+      intervalRef.current = setInterval(analyzeFrame, LIVE_SCAN_INTERVAL_MS);
+      analyzeFrame();
+    } catch (err) {
+      setError(err.message || "Camera permission denied");
+    }
+  }
+
+  function pauseScan() {
+    if (phase === "scanning") {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+      setPhase("paused");
+    } else if (phase === "paused") {
+      setPhase("scanning");
+      intervalRef.current = setInterval(analyzeFrame, LIVE_SCAN_INTERVAL_MS);
+      analyzeFrame();
+    }
+  }
+
+  function endScan() {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    stopCamera();
+    setPhase("summary");
+  }
+
+  function discardSession() {
+    sessionDetections.forEach((d) => {
+      if (d.thumbUrl) URL.revokeObjectURL(d.thumbUrl);
+    });
+    setSessionDetections([]);
+    setCurrent({ className: "", actualClass: "", confidence: 0 });
+    setSubmitMessage("");
+    setPhase("idle");
+    setError("");
+  }
+
+  async function submitReport() {
+    if (!farmId || !sessionDetections.length) return;
+    setSubmitting(true);
+    setError("");
+    try {
+      const payload = {
+        farm_id: Number(farmId),
+        detections: sessionDetections.map((d) => ({
+          predicted_class: d.className,
+          actual_class: d.actualClass,
+          confidence: d.confidence,
+          latitude: d.lat,
+          longitude: d.lon,
+          timestamp: d.timestamp,
+          image_base64: d.imageBase64 || null,
+        })),
+      };
+      const result = await api("/api/scan/submit-session", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      setSubmitMessage(
+        `Report saved — ${result.detections_saved} detection(s), ${result.alerts_created} alert(s)`
+      );
+      if (onSubmitted) onSubmitted();
+      setTimeout(() => discardSession(), 1500);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (phase === "summary") {
+    return (
+      <div className="live-scan-page fade-in">
+        <div className="live-scan-header">
+          <h2>Scan Session Summary</h2>
+          <p>{selectedFarm?.name || "Farm"} · {managerName}</p>
+        </div>
+        <ErrorBox message={error} />
+        {submitMessage && <div className="alert-success">{submitMessage}</div>}
+
+        <div className="live-summary-stats card">
+          <div className="live-summary-total">
+            <span className="live-summary-label">Total plants scanned</span>
+            <span className="live-summary-value">{plantsScanned}</span>
+          </div>
+          <div className="live-summary-breakdown">
+            <div className="live-breakdown-item healthy">Healthy: {breakdown.healthy}</div>
+            <div className="live-breakdown-item diseased">Diseased: {breakdown.diseased}</div>
+            <div className="live-breakdown-item pest">Pest: {breakdown.pest}</div>
+            <div className="live-breakdown-item water">Water stressed: {breakdown.water}</div>
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-title">Flagged plants ({flaggedPlants.length})</div>
+          {flaggedPlants.length === 0 ? (
+            <p style={{ color: "var(--muted)" }}>No issues flagged in this session.</p>
+          ) : (
+            <ul className="live-flagged-list">
+              {flaggedPlants.map((d) => (
+                <li className="live-flagged-item" key={d.id}>
+                  <img className="live-flagged-thumb" src={d.thumbUrl} alt="" />
+                  <div className="live-flagged-meta">
+                    <div><ClassBadge cls={d.actualClass} /> <strong>{d.confidence.toFixed(1)}%</strong></div>
+                    <div className="live-flagged-time">{new Date(d.timestamp).toLocaleString()}</div>
+                    {d.lat != null && d.lon != null && (
+                      <div className="live-flagged-gps">📍 {d.lat.toFixed(5)}, {d.lon.toFixed(5)}</div>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="live-scan-actions">
+          <button className="btn btn-primary live-scan-btn" onClick={submitReport} disabled={submitting || !sessionDetections.length}>
+            {submitting ? "Submitting…" : "Submit Report"}
+          </button>
+          <button className="btn btn-outline live-scan-btn" onClick={discardSession} disabled={submitting}>
+            Discard
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="live-scan-page fade-in">
+      <div className="live-scan-header">
+        <h2>Live Plant Scan</h2>
+        <p>
+          {selectedFarm?.name || "Select a farm"} · Manager: {managerName}
+        </p>
+        {farms.length > 0 && (
+          <select className="live-scan-farm-select" value={farmId} onChange={(e) => onFarmChange(e.target.value)} disabled={phase === "scanning" || phase === "paused"}>
+            {farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+          </select>
+        )}
+      </div>
+
+      <ErrorBox message={error} />
+
+      {phase === "idle" && (
+        <button className="btn btn-primary live-scan-start-btn" onClick={startScan} disabled={!farmId}>
+          Start Row Scan
+        </button>
+      )}
+
+      {(phase === "scanning" || phase === "paused") && (
+        <>
+          <div className="live-scan-counter">
+            Plants scanned: <strong>{plantsScanned}</strong> | Issues found: <strong>{issuesFound}</strong>
+            {phase === "paused" && <span className="live-paused-badge">PAUSED</span>}
+          </div>
+
+          <div className={`live-video-wrap ${liveScanBorderClass(current.className, current.actualClass)}`}>
+            <video ref={videoRef} className="live-video" playsInline muted autoPlay />
+            <div className="live-video-overlay">
+              <div className="live-detection-label">
+                {current.className
+                  ? `${liveScanDisplayLabel(current.className, current.actualClass)} — ${current.confidence.toFixed(1)}%`
+                  : "Scanning…"}
+              </div>
+            </div>
+          </div>
+
+          <canvas ref={canvasRef} style={{ display: "none" }} />
+
+          <div className="live-scan-controls">
+            <button className="btn btn-outline live-scan-btn" onClick={pauseScan}>
+              {phase === "paused" ? "Resume" : "Pause"}
+            </button>
+            <button className="btn btn-primary live-scan-btn live-scan-end-btn" onClick={endScan}>
+              End Scan
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── PAGE 2: Dashboard shell ───────────────────────────────────────────────────
 const SIDEBAR_ITEMS_BASE = [
   { id: "dashboard", icon: "📊", label: "Dashboard" },
   { id: "farms", icon: "🏡", label: "My Farms" },
   { id: "analysis", icon: "🔬", label: "Analysis" },
+  { id: "live-scan", icon: "📷", label: "Live Scan" },
   { id: "alerts", icon: "🚨", label: "Alerts" },
   { id: "reports", icon: "📋", label: "Reports" },
   { id: "settings", icon: "⚙️", label: "Settings" },
@@ -2552,6 +3351,17 @@ function DashboardApp({ user, onLogout }) {
         />
       );
     }
+    if (view === "live-scan") {
+      return (
+        <LiveScanPage
+          farms={farms}
+          farmId={farmId}
+          onFarmChange={setSelectedFarmId}
+          user={user}
+          onSubmitted={loadData}
+        />
+      );
+    }
     if (view === "alerts") {
       return (
         <AlertsPage
@@ -2563,7 +3373,14 @@ function DashboardApp({ user, onLogout }) {
       );
     }
     if (view === "admin" && isAdmin) {
-      return <AdminPage />;
+      return (
+        <AdminPage
+          onNavigateToFarm={(id) => {
+            setDetailFarmId(id);
+            setView("farms");
+          }}
+        />
+      );
     }
     if (view === "reports") {
       return (

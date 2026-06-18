@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 
 from ai_engine import model_status
 from database import DB_PATH, init_db
-from routers import alerts, detections, farms, users
+from routers import alerts, detections, farms, scan, users
 from routers.users import admin_router, auth_router
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
@@ -100,7 +100,13 @@ app.include_router(admin_router)   # GET /api/admin/stats, all-farms, all-users,
 app.include_router(users.router)   # GET /api/users/ (admin user list)
 app.include_router(farms.router)
 app.include_router(detections.router)
+app.include_router(scan.router)
 app.include_router(alerts.router)
+
+
+@app.get("/api/ping")
+def ping():
+    return {"status": "alive"}
 
 
 @app.get("/api/health")

@@ -77,10 +77,14 @@ def send_whatsapp_alert(
     class_name: str,
     confidence: float,
     timestamp: datetime,
+    *,
+    custom_body: str | None = None,
+    bypass_cooldown: bool = False,
 ) -> bool:
     """
     Send a WhatsApp alert via Twilio. Returns True if sent, False if skipped.
     Skips silently when not configured, on cooldown, or on API failure.
+    Pass custom_body to override the default template (e.g. urgent scan alerts).
     """
     if not _is_configured():
         print("WhatsApp not configured")
@@ -89,21 +93,23 @@ def send_whatsapp_alert(
     key = (farm_name, class_name)
     now = datetime.utcnow()
     last_sent = _cooldown.get(key)
-    if last_sent and (now - last_sent) < timedelta(minutes=COOLDOWN_MINUTES):
+    if not bypass_cooldown and last_sent and (now - last_sent) < timedelta(minutes=COOLDOWN_MINUTES):
         return False
 
-    problem_label = class_name.replace("_", " ").upper()
-    action = _CLASS_ACTIONS.get(class_name, "Inspect the affected plants immediately")
-    time_str = _format_timestamp(timestamp)
-
-    body = (
-        f"🌿 CropGuard AI Alert\n"
-        f"Farm: {farm_name}\n"
-        f"Problem: {problem_label}\n"
-        f"Confidence: {confidence:.1f}%\n"
-        f"Time: {time_str}\n"
-        f"Action: {action}"
-    )
+    if custom_body:
+        body = custom_body
+    else:
+        problem_label = class_name.replace("_", " ").upper()
+        action = _CLASS_ACTIONS.get(class_name, "Inspect the affected plants immediately")
+        time_str = _format_timestamp(timestamp)
+        body = (
+            f"🌿 CropGuard AI Alert\n"
+            f"Farm: {farm_name}\n"
+            f"Problem: {problem_label}\n"
+            f"Confidence: {confidence:.1f}%\n"
+            f"Time: {time_str}\n"
+            f"Action: {action}"
+        )
 
     sid = os.getenv("TWILIO_SID", "")
     token = os.getenv("TWILIO_TOKEN", "")
@@ -121,8 +127,9 @@ def send_whatsapp_alert(
             timeout=15,
         )
         if response.ok:
-            _cooldown[key] = now
-            print(f"  ✓  WhatsApp alert sent — {farm_name} / {problem_label}")
+            if not bypass_cooldown:
+                _cooldown[key] = now
+            print(f"  ✓  WhatsApp alert sent — {farm_name}")
             return True
         print(f"  ⚠  WhatsApp send failed ({response.status_code}): {response.text[:200]}")
         return False

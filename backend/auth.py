@@ -22,7 +22,7 @@ from passlib.context import CryptContext
 from sqlalchemy.orm import Query, Session
 
 from database import get_db
-from models import Farm, User
+from models import Farm, ManagerFarmAssignment, User
 from schemas import UserOut
 
 # JWT — 7-day expiry; set JWT_SECRET in production
@@ -133,17 +133,29 @@ def user_to_out(user: User) -> UserOut:
     )
 
 
+def _manager_assigned_farm_ids(db: Session, manager_id: int) -> list[int]:
+    rows = (
+        db.query(ManagerFarmAssignment.farm_id)
+        .filter(ManagerFarmAssignment.manager_id == manager_id)
+        .all()
+    )
+    return [r[0] for r in rows]
+
+
 # ── Role-based farm access ──────────────────────────────────────────────────────
 def farms_query_for_user(db: Session, user: User) -> Query:
     """
     farmer  → own farms only (user_id)
-    manager → farms assigned to them (manager_id)
+    manager → farms assigned via manager_farm_assignments (fallback: manager_id)
     admin   → all farms
     """
     q = db.query(Farm)
     if user.role == "admin":
         return q
     if user.role == "manager":
+        assigned_ids = _manager_assigned_farm_ids(db, user.id)
+        if assigned_ids:
+            return q.filter(Farm.id.in_(assigned_ids))
         return q.filter(Farm.manager_id == user.id)
     return q.filter(Farm.user_id == user.id)
 
@@ -152,10 +164,13 @@ def get_accessible_farm_ids(db: Session, user: User) -> list[int]:
     return [f.id for f in farms_query_for_user(db, user).all()]
 
 
-def can_access_farm(user: User, farm: Farm) -> bool:
+def can_access_farm(db: Session, user: User, farm: Farm) -> bool:
     if user.role == "admin":
         return True
     if user.role == "manager":
+        assigned_ids = _manager_assigned_farm_ids(db, user.id)
+        if assigned_ids:
+            return farm.id in assigned_ids
         return farm.manager_id == user.id
     return farm.user_id == user.id
 
@@ -164,6 +179,6 @@ def get_farm_for_user(db: Session, farm_id: int, user: User) -> Farm:
     farm = db.query(Farm).filter(Farm.id == farm_id).first()
     if not farm:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Farm not found")
-    if not can_access_farm(user, farm):
+    if not can_access_farm(db, user, farm):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
     return farm

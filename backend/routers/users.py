@@ -1,6 +1,6 @@
 import sys
 from collections import Counter
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 if hasattr(sys.stdout, "reconfigure"):
     try:
@@ -8,7 +8,7 @@ if hasattr(sys.stdout, "reconfigure"):
     except (OSError, ValueError):
         pass
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
@@ -22,19 +22,32 @@ from auth import (
     user_to_out,
 )
 from database import get_db
-from models import Detection, Farm, User
+from models import Detection, Farm, ManagerFarmAssignment, ScanSession, User
 from schemas import (
     ActivityFeedItem,
+    AdminFarmHealthComparisonOut,
     AdminFarmOut,
+    AdminFlaggedDetectionOut,
+    AdminManagerOverviewOut,
+    AdminScanSessionDetailOut,
+    AdminScanSessionOut,
     AdminStatsOut,
     AdminUserOut,
     DailyTrendOut,
+    ManagerAssignOut,
+    ManagerAssignRequest,
+    ManagerAssignmentsOut,
+    AdminDailyDigestOut,
+    DailyDigestFarmBreakdown,
+    DailyDigestSendOut,
     RoleChangeRequest,
     TokenResponse,
     UserLogin,
     UserOut,
     UserRegister,
 )
+
+from scan_reporting import build_daily_digest, send_daily_digest_email
 
 PROBLEM_CLASSES = {"diseased", "pest_affected", "water_stressed"}
 
@@ -350,4 +363,333 @@ def admin_change_user_role(
         farms_count=farm_counts.get(user.id, 0),
         created_at=user.created_at,
         status="Active",
+    )
+
+
+def _session_issues(session: ScanSession) -> int:
+    return session.diseased_count + session.pest_count + session.water_stressed_count
+
+
+def _session_health_score(session: ScanSession) -> float | None:
+    if session.total_scanned <= 0:
+        return None
+    return round((session.healthy_count / session.total_scanned) * 100, 1)
+
+
+def _scan_session_row(
+    session: ScanSession,
+    farms: dict[int, Farm],
+    managers: dict[int, User],
+) -> AdminScanSessionOut:
+    farm = farms.get(session.farm_id)
+    manager = managers.get(session.manager_id)
+    return AdminScanSessionOut(
+        session_id=session.id,
+        farm_id=session.farm_id,
+        farm_name=farm.name if farm else f"Farm #{session.farm_id}",
+        manager_id=session.manager_id,
+        manager_name=manager.name if manager else "Unknown",
+        started_at=session.started_at,
+        completed_at=session.completed_at,
+        total_scanned=session.total_scanned,
+        issues_found=_session_issues(session),
+        status=session.status,
+    )
+
+
+@admin_router.get("/scan-sessions", response_model=list[AdminScanSessionOut])
+def admin_scan_sessions(
+    farm_id: int | None = Query(None),
+    manager_id: int | None = Query(None),
+    sort: str = Query("desc", pattern="^(asc|desc)$"),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles("admin")),
+):
+    """All live scan sessions across farms and managers."""
+    q = db.query(ScanSession)
+    if farm_id is not None:
+        q = q.filter(ScanSession.farm_id == farm_id)
+    if manager_id is not None:
+        q = q.filter(ScanSession.manager_id == manager_id)
+    order = ScanSession.started_at.desc() if sort == "desc" else ScanSession.started_at.asc()
+    sessions = q.order_by(order).all()
+
+    farms = {f.id: f for f in db.query(Farm).all()}
+    managers = {u.id: u for u in db.query(User).filter(User.role == "manager").all()}
+    return [_scan_session_row(s, farms, managers) for s in sessions]
+
+
+@admin_router.get("/scan-sessions/{session_id}", response_model=AdminScanSessionDetailOut)
+def admin_scan_session_detail(
+    session_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles("admin")),
+):
+    """Full scan session detail with flagged plant detections."""
+    session = db.query(ScanSession).filter(ScanSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Scan session not found")
+
+    farms = {f.id: f for f in db.query(Farm).all()}
+    managers = {u.id: u for u in db.query(User).all()}
+    base = _scan_session_row(session, farms, managers)
+
+    flagged = (
+        db.query(Detection)
+        .filter(Detection.session_id == session_id)
+        .order_by(Detection.timestamp.desc())
+        .all()
+    )
+    flagged_out = [
+        AdminFlaggedDetectionOut(
+            id=d.id,
+            predicted_class=d.predicted_class,
+            confidence=d.confidence,
+            timestamp=d.timestamp,
+            latitude=d.latitude,
+            longitude=d.longitude,
+        )
+        for d in flagged
+    ]
+
+    return AdminScanSessionDetailOut(
+        **base.model_dump(),
+        healthy_count=session.healthy_count,
+        diseased_count=session.diseased_count,
+        pest_count=session.pest_count,
+        water_stressed_count=session.water_stressed_count,
+        flagged_detections=flagged_out,
+    )
+
+
+@admin_router.get("/managers-overview", response_model=list[AdminManagerOverviewOut])
+def admin_managers_overview(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles("admin")),
+):
+    """Per-manager scan activity and issue counts for the current week."""
+    today = date.today()
+    week_start = today - timedelta(days=6)
+    week_start_dt = datetime.combine(week_start, datetime.min.time())
+
+    managers = db.query(User).filter(User.role == "manager").order_by(User.name).all()
+    farms = {f.id: f for f in db.query(Farm).all()}
+    assignments = db.query(ManagerFarmAssignment).all()
+    assign_by_manager: dict[int, list[int]] = {}
+    for a in assignments:
+        assign_by_manager.setdefault(a.manager_id, []).append(a.farm_id)
+
+    all_sessions = db.query(ScanSession).all()
+    result: list[AdminManagerOverviewOut] = []
+
+    for mgr in managers:
+        farm_ids = assign_by_manager.get(mgr.id, [])
+        if not farm_ids:
+            farm_ids = [f.id for f in farms.values() if f.manager_id == mgr.id]
+
+        assigned_names = [farms[fid].name for fid in farm_ids if fid in farms]
+        mgr_sessions = [s for s in all_sessions if s.manager_id == mgr.id]
+        week_sessions = [
+            s for s in mgr_sessions
+            if (s.completed_at or s.started_at) >= week_start_dt
+        ]
+        issues_week = sum(_session_issues(s) for s in week_sessions)
+        last_scan = None
+        if mgr_sessions:
+            last_scan = max(s.completed_at or s.started_at for s in mgr_sessions)
+
+        result.append(
+            AdminManagerOverviewOut(
+                manager_id=mgr.id,
+                manager_name=mgr.name,
+                assigned_farms=assigned_names,
+                assigned_farm_count=len(assigned_names),
+                scans_this_week=len(week_sessions),
+                issues_this_week=issues_week,
+                last_scan_at=last_scan,
+            )
+        )
+    return result
+
+
+@admin_router.get("/farms-health-comparison", response_model=list[AdminFarmHealthComparisonOut])
+def admin_farms_health_comparison(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles("admin")),
+):
+    """Side-by-side farm health scores with scan-based trends."""
+    farms = db.query(Farm).order_by(Farm.name).all()
+    users = {u.id: u for u in db.query(User).all()}
+    all_sessions = (
+        db.query(ScanSession)
+        .filter(ScanSession.status == "completed")
+        .order_by(ScanSession.completed_at.desc())
+        .all()
+    )
+    sessions_by_farm: dict[int, list[ScanSession]] = {}
+    for s in all_sessions:
+        sessions_by_farm.setdefault(s.farm_id, []).append(s)
+
+    result: list[AdminFarmHealthComparisonOut] = []
+    for farm in farms:
+        farm_sessions = sessions_by_farm.get(farm.id, [])
+        latest_session = farm_sessions[0] if farm_sessions else None
+        previous_session = farm_sessions[1] if len(farm_sessions) > 1 else None
+
+        if latest_session and latest_session.total_scanned > 0:
+            score = _session_health_score(latest_session) or 100.0
+            last_scanned_at = latest_session.completed_at or latest_session.started_at
+            last_manager = users.get(latest_session.manager_id)
+            last_manager_name = last_manager.name if last_manager else None
+
+            trend = "stable"
+            if previous_session and previous_session.total_scanned > 0:
+                prev_score = _session_health_score(previous_session) or 0
+                if score > prev_score + 2:
+                    trend = "improving"
+                elif score < prev_score - 2:
+                    trend = "worsening"
+        else:
+            score, last_det_ts = _farm_health(db, farm.id)
+            last_scanned_at = last_det_ts
+            last_manager_name = None
+            if farm.manager_id:
+                mgr = users.get(farm.manager_id)
+                last_manager_name = mgr.name if mgr else None
+            trend = "stable"
+
+        result.append(
+            AdminFarmHealthComparisonOut(
+                farm_id=farm.id,
+                farm_name=farm.name,
+                health_score=score,
+                health_status=_health_status(score),
+                trend=trend,
+                last_manager_name=last_manager_name,
+                last_scanned_at=last_scanned_at,
+            )
+        )
+    return result
+
+
+@admin_router.get("/manager-assignments/{manager_id}", response_model=ManagerAssignmentsOut)
+def admin_manager_assignments(
+    manager_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles("admin")),
+):
+    """Return farm IDs currently assigned to a manager."""
+    manager = db.query(User).filter(User.id == manager_id, User.role == "manager").first()
+    if not manager:
+        raise HTTPException(status_code=404, detail="Manager not found")
+    farm_ids = [
+        a.farm_id
+        for a in db.query(ManagerFarmAssignment)
+        .filter(ManagerFarmAssignment.manager_id == manager_id)
+        .all()
+    ]
+    if not farm_ids:
+        farm_ids = [
+            f.id for f in db.query(Farm).filter(Farm.manager_id == manager_id).all()
+        ]
+    return ManagerAssignmentsOut(manager_id=manager_id, farm_ids=farm_ids)
+
+
+@admin_router.post("/assign-manager", response_model=ManagerAssignOut)
+def admin_assign_manager(
+    payload: ManagerAssignRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles("admin")),
+):
+    """Assign farms to a manager (replaces existing assignments)."""
+    manager = db.query(User).filter(User.id == payload.manager_id).first()
+    if not manager or manager.role != "manager":
+        raise HTTPException(status_code=400, detail="Invalid manager_id")
+
+    farms = db.query(Farm).filter(Farm.id.in_(payload.farm_ids)).all() if payload.farm_ids else []
+    if len(farms) != len(set(payload.farm_ids)):
+        raise HTTPException(status_code=400, detail="One or more farm IDs are invalid")
+
+    previous = (
+        db.query(ManagerFarmAssignment)
+        .filter(ManagerFarmAssignment.manager_id == payload.manager_id)
+        .all()
+    )
+    previous_farm_ids = {a.farm_id for a in previous}
+    for a in previous:
+        db.delete(a)
+
+    for farm_id in payload.farm_ids:
+        db.add(ManagerFarmAssignment(manager_id=payload.manager_id, farm_id=farm_id))
+
+    new_farm_ids = set(payload.farm_ids)
+    for farm_id in previous_farm_ids - new_farm_ids:
+        farm = db.query(Farm).filter(Farm.id == farm_id).first()
+        if farm and farm.manager_id == payload.manager_id:
+            farm.manager_id = None
+
+    for farm in farms:
+        farm.manager_id = payload.manager_id
+
+    db.commit()
+    return ManagerAssignOut(
+        manager_id=payload.manager_id,
+        assigned_farm_ids=payload.farm_ids,
+        message=f"Assigned {len(payload.farm_ids)} farm(s) to {manager.name}",
+    )
+
+
+def _digest_to_schema(raw: dict) -> AdminDailyDigestOut:
+    def _farm_row(item: dict) -> DailyDigestFarmBreakdown:
+        return DailyDigestFarmBreakdown(
+            farm_id=item["farm_id"],
+            farm_name=item["farm_name"],
+            sessions_count=item["sessions_count"],
+            plants_scanned=item["plants_scanned"],
+            issues_found=item["issues_found"],
+            problem_rate=item["problem_rate"],
+        )
+
+    return AdminDailyDigestOut(
+        period_start=raw["period_start"],
+        period_end=raw["period_end"],
+        farms_scanned=raw["farms_scanned"],
+        managers_active=raw["managers_active"],
+        total_sessions=raw["total_sessions"],
+        total_plants_checked=raw["total_plants_checked"],
+        total_issues_found=raw["total_issues_found"],
+        breakdown_by_farm=[_farm_row(f) for f in raw["breakdown_by_farm"]],
+        top_concerning_farms=[_farm_row(f) for f in raw["top_concerning_farms"]],
+        manager_names=raw.get("manager_names", []),
+    )
+
+
+@admin_router.get("/daily-digest", response_model=AdminDailyDigestOut)
+def admin_daily_digest(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles("admin")),
+):
+    """Consolidated summary of all scan sessions from the last 24 hours."""
+    return _digest_to_schema(build_daily_digest(db, hours=24))
+
+
+@admin_router.post("/daily-digest/send", response_model=DailyDigestSendOut)
+def admin_send_daily_digest(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles("admin")),
+):
+    """Build the daily digest and email it to all admin users."""
+    result = send_daily_digest_email(db, hours=24)
+    digest = _digest_to_schema(result["digest"])
+    if result["admin_recipients"] == 0:
+        message = "No admin users found to email"
+    elif result["email_sent"]:
+        message = f"Daily digest emailed to {result['admin_recipients']} admin(s)"
+    else:
+        message = "Digest built but email not sent (SMTP not configured or send failed)"
+    return DailyDigestSendOut(
+        digest=digest,
+        email_sent=result["email_sent"],
+        admin_recipients=result["admin_recipients"],
+        message=message,
     )

@@ -11,7 +11,6 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from auth import (
-    can_access_farm,
     farms_query_for_user,
     get_current_user,
     get_farm_for_user,
