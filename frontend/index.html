@@ -17,6 +17,28 @@
 </head>
 <body>
   <div id="root"></div>
-  <script type="text/babel" src="./app.js"></script>
+  <script>
+    (function () {
+      fetch("./app.js")
+        .then(function (response) {
+          if (!response.ok) {
+            throw new Error("Failed to fetch app.js: " + response.status);
+          }
+          return response.text();
+        })
+        .then(function (code) {
+          var compiled = Babel.transform(code, {
+            presets: [["react", { runtime: "classic" }]],
+            filename: "app.js",
+          }).code;
+          var script = document.createElement("script");
+          script.text = compiled;
+          document.body.appendChild(script);
+        })
+        .catch(function (err) {
+          console.error("[CropGuard] Failed to boot app.js:", err);
+        });
+    })();
+  </script>
 </body>
 </html>

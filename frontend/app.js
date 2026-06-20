@@ -2667,7 +2667,7 @@ function ReportPreview({ report, onDownload }) {
         <p>{report.recommendations}</p>
       </div>
 
-      <button className="btn btn-primary btn-export-report" onClick={() => onDownload(report)}>
+      <button className="btn btn-primary btn-download-report" onClick={() => onDownload(report)}>
         Download Report as HTML
       </button>
     </div>
