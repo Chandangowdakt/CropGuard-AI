@@ -48,6 +48,7 @@ from schemas import (
 )
 
 from scan_reporting import build_daily_digest, send_daily_digest_email
+from ai_engine import get_shadow_comparison_stats
 
 PROBLEM_CLASSES = {"diseased", "pest_affected", "water_stressed"}
 
@@ -177,6 +178,17 @@ def _farm_health(db: Session, farm_id: int) -> tuple[float, str | None]:
     healthy = sum(1 for d in detections if d.predicted_class == "healthy")
     score = round((healthy / len(detections)) * 100, 1)
     return score, detections[0].timestamp
+
+
+@admin_router.get("/shadow-comparison")
+def admin_shadow_comparison(
+    _admin: User = Depends(require_roles("admin")),
+):
+    """
+    Admin-only: live vs shadow v2 agreement stats from shadow_predictions.csv.
+    Shadow model is never shown to end users.
+    """
+    return get_shadow_comparison_stats()
 
 
 @admin_router.get("/stats", response_model=AdminStatsOut)

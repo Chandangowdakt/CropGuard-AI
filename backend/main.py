@@ -24,7 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from ai_engine import model_status
+from ai_engine import load_all_engines, model_status
 from database import DB_PATH, init_db
 from routers import alerts, detections, farms, scan, users
 from routers.users import admin_router, auth_router
@@ -41,6 +41,12 @@ def _print_startup_banner() -> None:
         if loaded
         else f"NOT FOUND — {status.get('error', 'unknown')}"
     )
+    shadow = status.get("shadow_v2", {})
+    shadow_msg = (
+        f"LOADED (shadow only) — {shadow.get('path', '')}"
+        if shadow.get("loaded")
+        else "NOT LOADED — shadow logging disabled"
+    )
 
     print()
     print("╔══════════════════════════════════════════════════════════════╗")
@@ -55,6 +61,7 @@ def _print_startup_banner() -> None:
     print("╠══════════════════════════════════════════════════════════════╣")
     print(f"  Database     : SQLite — {DB_PATH}")
     print(f"  AI Model     : {model_msg}")
+    print(f"  Shadow v2    : {shadow_msg}")
     print("╠══════════════════════════════════════════════════════════════╣")
     print("║  Admin login  : admin@cropguard.ai / admin123                ║")
     print("║  Farmer demo  : farmer@cropguard.ai / farmer123              ║")
@@ -69,6 +76,7 @@ async def lifespan(app: FastAPI):
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
     (STORAGE_DIR / "uploads").mkdir(exist_ok=True)
     (STORAGE_DIR / "flagged").mkdir(exist_ok=True)
+    load_all_engines()
     _print_startup_banner()
     yield
 
