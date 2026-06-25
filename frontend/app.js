@@ -323,7 +323,7 @@ function AuthPage({ onSuccess }) {
 
         {mode === "login" && (
           <p style={{ textAlign: "center", marginTop: 16, fontSize: "0.82rem", color: "var(--muted)" }}>
-            Demo: farmer@cropguard.ai / farmer123
+            Demo: admin@cropguard.ai / admin123 · farmer@cropguard.ai / farmer123
           </p>
         )}
       </div>

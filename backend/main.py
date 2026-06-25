@@ -26,6 +26,7 @@ from fastapi.staticfiles import StaticFiles
 
 from ai_engine import load_all_engines, model_status
 from database import DB_PATH, init_db
+from seed import ensure_seeded_if_empty
 from routers import alerts, detections, farms, scan, users
 from routers.users import admin_router, auth_router
 
@@ -76,6 +77,8 @@ async def lifespan(app: FastAPI):
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
     (STORAGE_DIR / "uploads").mkdir(exist_ok=True)
     (STORAGE_DIR / "flagged").mkdir(exist_ok=True)
+    if ensure_seeded_if_empty():
+        print("  Database seeded with demo users (admin, farmer, manager)")
     load_all_engines()
     _print_startup_banner()
     yield

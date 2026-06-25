@@ -175,5 +175,17 @@ def seed():
         db.close()
 
 
+def ensure_seeded_if_empty() -> bool:
+    """Create demo users on first boot (e.g. fresh Render /tmp SQLite). Idempotent."""
+    db = SessionLocal()
+    try:
+        if db.query(User).first() is not None:
+            return False
+    finally:
+        db.close()
+    seed()
+    return True
+
+
 if __name__ == "__main__":
     seed()
