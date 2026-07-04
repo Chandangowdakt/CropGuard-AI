@@ -609,34 +609,42 @@ def model_status() -> dict:
     """Backward-compatible status helper used by main.py health checks."""
     status = get_model_status()
     shadow = get_shadow_model_status()
-    if not status["loaded"]:
-        error = SERVER_UNAVAILABLE_MESSAGE if not TORCH_AVAILABLE else MODEL_UNAVAILABLE_MESSAGE
+    base = {"torch_available": TORCH_AVAILABLE, "shadow_v2": shadow}
+    if not TORCH_AVAILABLE:
         return {
+            **base,
+            "loaded": False,
+            "path": status.get("path"),
+            "error": SERVER_UNAVAILABLE_MESSAGE,
+        }
+    if not status["loaded"]:
+        error = MODEL_UNAVAILABLE_MESSAGE
+        return {
+            **base,
             "loaded": False,
             "path": status.get("path"),
             "error": error,
-            "shadow_v2": shadow,
         }
     try:
         bundle = load_engine()
         if bundle is None:
             return {
+                **base,
                 "loaded": False,
                 "path": status.get("path"),
                 "error": MODEL_UNAVAILABLE_MESSAGE,
-                "shadow_v2": shadow,
             }
         return {
+            **base,
             "loaded": True,
             "path": status["path"],
             "classes": bundle["class_names"],
             "device": str(bundle["device"]),
-            "shadow_v2": shadow,
         }
     except ModelLoadError as e:
         return {
+            **base,
             "loaded": False,
             "path": status.get("path"),
             "error": str(e),
-            "shadow_v2": shadow,
         }
