@@ -1380,9 +1380,11 @@ function QuickAnalysis({ farmId, farms, onAnalyzed }) {
   const cls2 = pred2.class || result?.detection?.predicted_class;
   const actualClass = pred2.actual_class || cls2;
   const conf2 = pred2.confidence ?? result?.detection?.confidence;
-  const isUncertain = cls2 === "uncertain" || (conf2 != null && conf2 < 75);
+  const isUnavailable = cls2 === "unavailable";
+  const isUncertain = !isUnavailable && (cls2 === "uncertain" || (conf2 != null && conf2 < 75));
   let resultClass = "result-healthy";
-  if (isUncertain) resultClass = "result-uncertain";
+  if (isUnavailable) resultClass = "result-uncertain";
+  else if (isUncertain) resultClass = "result-uncertain";
   else if (actualClass === "water_stressed") resultClass = "result-water";
   else if (actualClass === "pest_affected") resultClass = "result-pest";
   else if (actualClass && actualClass !== "healthy") resultClass = "result-problem";
@@ -1430,7 +1432,14 @@ function QuickAnalysis({ farmId, farms, onAnalyzed }) {
 
       {result && (
         <div className={`result-panel ${resultClass}`}>
-          {isUncertain ? (
+          {isUnavailable ? (
+            <>
+              <p className="result-uncertain-title">AI model unavailable on server — contact admin or run locally</p>
+              {pred2.message && (
+                <div style={{ fontSize: "0.9rem", color: "var(--muted)", marginBottom: 8 }}>{pred2.message}</div>
+              )}
+            </>
+          ) : isUncertain ? (
             <>
               <p className="result-uncertain-title">Uncertain — Take a closer photo of the leaf for better accuracy</p>
               {pred2.message && (

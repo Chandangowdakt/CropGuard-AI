@@ -13,10 +13,11 @@ backend/.env
 *.db
 backend/cropguard.db
 
-# AI model - too large for GitHub (14MB)
+# AI model weights — production live model is tracked for Render deploy
 *.pth
 *.pt
-backend/chrysanthemum_model.pth
+!backend/chrysanthemum_model.pth
+backend/models/chrysanthemum_model_v2.pth
 
 # Uploaded images - not needed on server
 backend/storage/

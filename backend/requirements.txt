@@ -8,8 +8,7 @@ passlib==1.7.4
 bcrypt==5.0.0
 python-multipart==0.0.32
 pillow==12.2.0
-# torch and torchvision installed separately - too large for Render free tier
-# AI model runs locally only - Render returns "model unavailable" response
+# torch + torchvision: installed on Render via render.yaml buildCommand (CPU wheels)
 python-dotenv==1.2.2
 aiofiles==25.1.0
 requests==2.34.2

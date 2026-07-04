@@ -10,6 +10,8 @@ import csv
 import hashlib
 import io
 import sys
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -58,6 +60,13 @@ SHADOW_CSV_COLUMNS = [
     "agree",
 ]
 
+DEFAULT_MODEL_DOWNLOAD_URL = (
+    "https://raw.githubusercontent.com/Chandangowdakt/CropGuard-AI/main/"
+    "backend/chrysanthemum_model.pth"
+)
+DEFAULT_MODEL_DEST = BACKEND_DIR / "chrysanthemum_model.pth"
+MIN_MODEL_BYTES = 5_000_000
+
 MODEL_SEARCH_PATHS = [
     Path("/tmp/chrysanthemum_model.pth"),
     BACKEND_DIR / "chrysanthemum_model.pth",
@@ -97,16 +106,54 @@ class ModelLoadError(RuntimeError):
     """Raised when the checkpoint cannot be loaded."""
 
 
+def _is_valid_model_file(path: Path) -> bool:
+    return path.is_file() and path.stat().st_size >= MIN_MODEL_BYTES
+
+
 def _resolve_model_path() -> Path | None:
     env_path = os.getenv("CROPGUARD_MODEL_PATH")
     if env_path:
         candidate = Path(env_path)
-        if candidate.exists():
+        if _is_valid_model_file(candidate):
             return candidate
     for candidate in MODEL_SEARCH_PATHS:
-        if candidate.exists():
+        if _is_valid_model_file(candidate):
             return candidate
     return None
+
+
+def ensure_model_available() -> Path | None:
+    """
+    Ensure the live production model exists on disk.
+
+    On Render the .pth file is not in the repo history by default; download it once
+    from GitHub (or CROPGUARD_MODEL_URL) before inference.
+    """
+    existing = _resolve_model_path()
+    if existing is not None:
+        return existing
+
+    url = os.getenv("CROPGUARD_MODEL_URL", DEFAULT_MODEL_DOWNLOAD_URL)
+    dest = DEFAULT_MODEL_DEST
+    if _is_valid_model_file(dest):
+        return dest
+
+    try:
+        print(f"Downloading chrysanthemum_model.pth from {url} ...")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        request = urllib.request.Request(url, headers={"User-Agent": "CropGuard-AI/1.0"})
+        with urllib.request.urlopen(request, timeout=120) as response:
+            data = response.read()
+        if len(data) < MIN_MODEL_BYTES:
+            raise ModelLoadError(
+                f"Downloaded model is too small ({len(data)} bytes) — check CROPGUARD_MODEL_URL"
+            )
+        dest.write_bytes(data)
+        print(f"Model saved to {dest} ({len(data):,} bytes)")
+        return dest
+    except (urllib.error.URLError, OSError, ModelLoadError) as e:
+        print(f"Model download failed: {e}")
+        return None
 
 
 def _resolve_shadow_model_path() -> Path | None:
@@ -259,6 +306,7 @@ def load_shadow_engine() -> dict | None:
 
 def load_all_engines() -> None:
     """Load live and shadow models on startup / first prediction."""
+    ensure_model_available()
     load_engine()
     load_shadow_engine()
 
