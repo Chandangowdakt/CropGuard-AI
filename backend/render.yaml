@@ -1,13 +1,13 @@
 services:
   - type: web
     name: cropguard-ai-backend
-    env: python
+    runtime: docker
     rootDir: backend
-    runtime: python
-    buildCommand: bash build.sh
+    dockerfilePath: ./Dockerfile
+    plan: free
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
-      - key: PYTHON_VERSION
-        value: "3.11.9"
       - key: CROPGUARD_MODEL_URL
         value: https://raw.githubusercontent.com/Chandangowdakt/CropGuard-AI/main/backend/chrysanthemum_model.pth
+      - key: CROPGUARD_LEAF_MODEL_URL
+        value: https://raw.githubusercontent.com/Chandangowdakt/CropGuard-AI/main/backend/models/chrysanthemum_leaf_model.pth

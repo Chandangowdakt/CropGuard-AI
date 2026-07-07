@@ -131,7 +131,9 @@ def ping():
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "service": "CropGuard AI", "model": model_status()}
+    status = model_status()
+    status["leaf_model"] = get_leaf_model_status()
+    return {"status": "ok", "service": "CropGuard AI", "model": status}
 
 
 @app.get("/api/setup/seed")

@@ -36,6 +36,13 @@ BACKEND_DIR = Path(__file__).resolve().parent
 IMAGE_SIZE = 224
 DROPOUT = 0.3
 PROBLEM_CLASSES = {"Bacterial", "Septoria"}
+MIN_MODEL_BYTES = 5_000_000
+
+DEFAULT_LEAF_MODEL_URL = (
+    "https://raw.githubusercontent.com/Chandangowdakt/CropGuard-AI/main/"
+    "backend/models/chrysanthemum_leaf_model.pth"
+)
+DEFAULT_LEAF_MODEL_DEST = BACKEND_DIR / "models" / "chrysanthemum_leaf_model.pth"
 
 MODEL_SEARCH_PATHS = [
     BACKEND_DIR / "models" / "chrysanthemum_leaf_model.pth",
@@ -83,12 +90,46 @@ def _resolve_model_path() -> Path | None:
     env_path = os.getenv("CROPGUARD_LEAF_MODEL_PATH")
     if env_path:
         candidate = Path(env_path)
-        if candidate.is_file():
+        if _is_valid_model_file(candidate):
             return candidate
     for candidate in MODEL_SEARCH_PATHS:
-        if candidate.is_file():
+        if _is_valid_model_file(candidate):
             return candidate
     return None
+
+
+def _is_valid_model_file(path: Path) -> bool:
+    return path.is_file() and path.stat().st_size >= MIN_MODEL_BYTES
+
+
+def ensure_leaf_model_available() -> Path | None:
+    """Download leaf model from GitHub if missing on disk (e.g. Render deploy)."""
+    existing = _resolve_model_path()
+    if existing is not None:
+        return existing
+
+    url = os.getenv("CROPGUARD_LEAF_MODEL_URL", DEFAULT_LEAF_MODEL_URL)
+    dest = DEFAULT_LEAF_MODEL_DEST
+    if _is_valid_model_file(dest):
+        return dest
+
+    try:
+        import urllib.request
+
+        print(f"Downloading chrysanthemum_leaf_model.pth from {url} ...")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        request = urllib.request.Request(url, headers={"User-Agent": "CropGuard-AI/1.0"})
+        with urllib.request.urlopen(request, timeout=120) as response:
+            data = response.read()
+        if len(data) < MIN_MODEL_BYTES:
+            print(f"Leaf model download too small ({len(data)} bytes)")
+            return None
+        dest.write_bytes(data)
+        print(f"Leaf model saved to {dest} ({len(data):,} bytes)")
+        return dest
+    except Exception as exc:
+        print(f"Leaf model download failed: {exc}")
+        return None
 
 
 def _build_transform(image_size: int = IMAGE_SIZE) -> transforms.Compose:
@@ -115,6 +156,7 @@ def load_leaf_engine() -> dict | None:
     if _leaf_bundle is not None:
         return _leaf_bundle
 
+    ensure_leaf_model_available()
     model_path = _resolve_model_path()
     leaf_model_path_used = model_path
     if model_path is None:
