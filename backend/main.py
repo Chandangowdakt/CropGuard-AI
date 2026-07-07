@@ -25,6 +25,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from ai_engine import load_all_engines, model_status
+from leaf_engine import load_leaf_engine, get_leaf_model_status
 from database import DB_PATH, init_db
 from seed import ensure_seeded_if_empty
 from routers import alerts, detections, farms, scan, users
@@ -48,6 +49,12 @@ def _print_startup_banner() -> None:
         if shadow.get("loaded")
         else "NOT LOADED — shadow logging disabled"
     )
+    leaf = get_leaf_model_status()
+    leaf_msg = (
+        f"LOADED — {leaf.get('path', '')}"
+        if leaf.get("loaded")
+        else f"NOT LOADED — {leaf.get('error', 'unknown')}"
+    )
 
     print()
     print("╔══════════════════════════════════════════════════════════════╗")
@@ -63,6 +70,7 @@ def _print_startup_banner() -> None:
     print(f"  Database     : SQLite — {DB_PATH}")
     print(f"  AI Model     : {model_msg}")
     print(f"  Shadow v2    : {shadow_msg}")
+    print(f"  Leaf Model  : {leaf_msg}")
     print("╠══════════════════════════════════════════════════════════════╣")
     print("║  Admin login  : admin@cropguard.ai / admin123                ║")
     print("║  Farmer demo  : farmer@cropguard.ai / farmer123              ║")
@@ -80,6 +88,7 @@ async def lifespan(app: FastAPI):
     if ensure_seeded_if_empty():
         print("  Database seeded with demo users (admin, farmer, manager)")
     load_all_engines()
+    load_leaf_engine()
     _print_startup_banner()
     yield
 

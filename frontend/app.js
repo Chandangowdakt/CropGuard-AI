@@ -949,6 +949,186 @@ function AnalysisHistoryCard({ detection }) {
   );
 }
 
+function LeafScanPage() {
+  const [file, setFile] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState("");
+  const inputRef = useRef(null);
+
+  function pickFile(f) {
+    const err = validateImageFile(f);
+    if (err) {
+      setError(err);
+      return;
+    }
+    setFile(f);
+    setPreview(URL.createObjectURL(f));
+    setResult(null);
+    setError("");
+  }
+
+  function onDrop(e) {
+    e.preventDefault();
+    setDragOver(false);
+    const f = e.dataTransfer.files[0];
+    if (f) pickFile(f);
+  }
+
+  function resetForm() {
+    setFile(null);
+    setPreview(null);
+    setResult(null);
+    setError("");
+    if (inputRef.current) inputRef.current.value = "";
+  }
+
+  async function analyse() {
+    if (!file) {
+      setError("Upload a leaf photo first");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    setResult(null);
+    const token = getToken();
+    const fd = new FormData();
+    fd.append("file", file);
+    try {
+      const res = await fetch(`${API_BASE}/api/detections/analyze-leaf`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: fd,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Leaf analysis failed");
+      setResult(data);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const cls = result?.class;
+  const conf = result?.confidence;
+  const isUnavailable = cls === "unavailable";
+  let cardClass = "leaf-result-card";
+  let headline = "";
+  if (!isUnavailable && cls === "Healthy") {
+    cardClass += " leaf-result-healthy";
+    headline = "HEALTHY ✓";
+  } else if (!isUnavailable && cls === "Bacterial") {
+    cardClass += " leaf-result-bacterial";
+    headline = "BACTERIAL INFECTION ⚠";
+  } else if (!isUnavailable && cls === "Septoria") {
+    cardClass += " leaf-result-septoria";
+    headline = "SEPTORIA LEAF SPOT ⚠";
+  }
+
+  return (
+    <div className="fade-in">
+      <div className="page-header">
+        <h2>Chrysanthemum Leaf Disease Detection</h2>
+        <p>Upload a close-up photo of a chrysanthemum leaf for instant disease classification</p>
+      </div>
+
+      <ErrorBox message={error} />
+
+      <div className="card fade-in-delay">
+        <div
+          className={`dropzone ${dragOver ? "drag-over" : ""}`}
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={onDrop}
+          onClick={() => !result && inputRef.current?.click()}
+        >
+          <div className="dz-icon">🍃</div>
+          <p><strong>Drag & drop</strong> a leaf photo here, or click to browse</p>
+          <p style={{ marginTop: 6, fontSize: "0.82rem" }}>
+            JPG, PNG only — For best results: photograph the leaf close-up, good lighting,
+            both sides of the leaf if possible
+          </p>
+          <input
+            ref={inputRef}
+            type="file"
+            accept="image/jpeg,image/png,image/jpg"
+            style={{ display: "none" }}
+            onChange={(e) => pickFile(e.target.files[0])}
+          />
+        </div>
+
+        {preview && (
+          <div style={{ marginTop: 16, textAlign: "center" }}>
+            <img
+              src={preview}
+              alt="Leaf preview"
+              style={{ maxHeight: 200, borderRadius: 10, border: "1px solid var(--border)" }}
+            />
+            <p style={{ fontSize: "0.82rem", color: "var(--muted)", marginTop: 6 }}>{file?.name}</p>
+          </div>
+        )}
+
+        {!result && (
+          <div style={{ marginTop: 16, display: "flex", gap: 12 }}>
+            <button
+              className="btn btn-primary"
+              style={{ width: "auto", flex: 1 }}
+              onClick={analyse}
+              disabled={loading || !file}
+            >
+              {loading ? "Analysing…" : "Analyse Leaf"}
+            </button>
+          </div>
+        )}
+
+        {result && !isUnavailable && (
+          <div className={cardClass} style={{ marginTop: 20 }}>
+            <div className="leaf-result-headline">{headline}</div>
+            <div className="leaf-result-class">{cls}</div>
+            <div className="leaf-result-confidence">{Number(conf || 0).toFixed(1)}%</div>
+            <p className="leaf-result-description">{result.description}</p>
+            <div className="leaf-recommendation-box">
+              <strong>Recommendation</strong>
+              <p>{result.recommendation}</p>
+            </div>
+            <button className="btn btn-secondary" style={{ marginTop: 16 }} onClick={resetForm}>
+              Analyse Another Leaf
+            </button>
+          </div>
+        )}
+
+        {result && isUnavailable && (
+          <div className="leaf-result-card leaf-result-unavailable" style={{ marginTop: 20 }}>
+            <p className="leaf-result-headline">MODEL UNAVAILABLE</p>
+            <p>{result.message || "Leaf model not loaded"}</p>
+            <button className="btn btn-secondary" style={{ marginTop: 16 }} onClick={resetForm}>
+              Try Again
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="card leaf-info-panel" style={{ marginTop: 20 }}>
+        <div className="card-title">About the 3 disease classes</div>
+        <ul className="leaf-class-info-list">
+          <li>
+            <strong>Healthy</strong> — No visible disease symptoms; leaf tissue appears normal.
+          </li>
+          <li>
+            <strong>Bacterial</strong> — Bacterial leaf spot or blight causing dark lesions on tissue.
+          </li>
+          <li>
+            <strong>Septoria</strong> — Fungal leaf spot with circular brown lesions and yellow halos.
+          </li>
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 function AnalysisPage({ farms, farmId, onFarmChange, onAnalyzed }) {
   const { pushToast } = useToast();
   const [file, setFile] = useState(null);
@@ -3171,6 +3351,7 @@ const SIDEBAR_ITEMS_BASE = [
   { id: "dashboard", icon: "📊", label: "Dashboard" },
   { id: "farms", icon: "🏡", label: "My Farms" },
   { id: "analysis", icon: "🔬", label: "Analysis" },
+  { id: "leaf-scan", icon: "🍃", label: "Leaf Scan" },
   { id: "live-scan", icon: "📷", label: "Live Scan" },
   { id: "alerts", icon: "🚨", label: "Alerts" },
   { id: "reports", icon: "📋", label: "Reports" },
@@ -3359,6 +3540,9 @@ function DashboardApp({ user, onLogout }) {
           onAnalyzed={loadData}
         />
       );
+    }
+    if (view === "leaf-scan") {
+      return <LeafScanPage />;
     }
     if (view === "live-scan") {
       return (

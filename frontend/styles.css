@@ -669,6 +669,81 @@ tr:hover td { background: rgba(244, 247, 244, 0.6); }
 }
 .result-panel .conf { font-size: 1.2rem; color: var(--muted); }
 
+/* Leaf Scan page */
+.leaf-result-card {
+  border-radius: var(--radius);
+  padding: 24px;
+  text-align: center;
+  animation: fadeIn 0.4s ease;
+}
+.leaf-result-healthy {
+  background: #ecfdf3;
+  border: 3px solid var(--secondary);
+}
+.leaf-result-bacterial {
+  background: #fef2f2;
+  border: 3px solid var(--danger);
+}
+.leaf-result-septoria {
+  background: #fff7ed;
+  border: 3px solid #ea580c;
+}
+.leaf-result-unavailable {
+  background: #f3f4f6;
+  border: 3px solid var(--muted);
+}
+.leaf-result-headline {
+  font-size: 1.5rem;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  margin-bottom: 8px;
+}
+.leaf-result-class {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.leaf-result-confidence {
+  font-size: 3rem;
+  font-weight: 900;
+  line-height: 1.1;
+  margin: 8px 0 16px;
+}
+.leaf-result-description {
+  font-size: 1rem;
+  color: var(--text);
+  margin-bottom: 16px;
+}
+.leaf-recommendation-box {
+  background: rgba(255, 255, 255, 0.75);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  text-align: left;
+  margin: 0 auto;
+  max-width: 520px;
+}
+.leaf-recommendation-box strong {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--primary);
+}
+.leaf-recommendation-box p {
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+.leaf-info-panel .leaf-class-info-list {
+  margin: 0;
+  padding-left: 1.2rem;
+  color: var(--muted);
+  line-height: 1.7;
+}
+.leaf-info-panel .leaf-class-info-list li {
+  margin-bottom: 8px;
+}
+
 .placeholder-view {
   text-align: center;
   padding: 60px 24px;

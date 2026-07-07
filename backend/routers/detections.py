@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from ai_engine import ModelLoadError, get_model_status, predict_image_bytes
+from leaf_engine import predict_leaf_bytes
 from whatsapp_alerts import WHATSAPP_CONFIDENCE_THRESHOLD, send_whatsapp_alert
 from auth import get_accessible_farm_ids, get_current_user, get_farm_for_user
 from database import get_db
@@ -25,6 +26,7 @@ from schemas import (
     FarmReportOut,
     FarmReportSummary,
     FarmSummaryOut,
+    LeafAnalysisOut,
     PredictionOut,
     ReportDetectionOut,
     StatsOut,
@@ -171,6 +173,18 @@ async def analyze_image(
         message=summary,
         analyzed_at=datetime.utcnow(),
     )
+
+
+@router.post("/analyze-leaf", response_model=LeafAnalysisOut)
+async def analyze_leaf_image(
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+):
+    """Upload a chrysanthemum leaf photo for 3-class disease classification."""
+    _ensure_dirs()
+    image_bytes, _ext = await _read_image_upload(file)
+    result = predict_leaf_bytes(image_bytes)
+    return LeafAnalysisOut(**result)
 
 
 @router.post("/save", response_model=DetectionResult, status_code=status.HTTP_201_CREATED)

@@ -124,6 +124,20 @@ class AnalysisPreviewOut(BaseModel):
     analyzed_at: datetime
 
 
+class LeafAnalysisOut(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    predicted_class: str = Field(
+        validation_alias=AliasChoices("class", "predicted_class"),
+        serialization_alias="class",
+    )
+    confidence: float = 0.0
+    is_problem: bool = False
+    description: str | None = None
+    recommendation: str | None = None
+    message: str | None = None
+
+
 class DetectionResult(BaseModel):
     detection: DetectionOut
     prediction: PredictionOut

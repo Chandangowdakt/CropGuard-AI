@@ -17,6 +17,7 @@ backend/cropguard.db
 *.pth
 *.pt
 !backend/chrysanthemum_model.pth
+!backend/models/chrysanthemum_leaf_model.pth
 backend/models/chrysanthemum_model_v2.pth
 
 # Uploaded images - not needed on server
