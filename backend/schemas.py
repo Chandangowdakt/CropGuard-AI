@@ -92,6 +92,8 @@ class FarmWeatherOut(BaseModel):
     windspeed: float
     disease_risk: Literal["LOW", "MEDIUM", "HIGH"]
     updated_at: datetime
+    cached: bool | None = None
+    note: str | None = None
 
 
 class DetectionOut(BaseModel):

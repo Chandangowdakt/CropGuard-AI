@@ -115,6 +115,8 @@ def farm_weather(
         windspeed=data["windspeed"],
         disease_risk=data["disease_risk"],
         updated_at=datetime.fromisoformat(data["updated_at"].replace("Z", "")),
+        cached=data.get("cached"),
+        note=data.get("note"),
     )
 
 

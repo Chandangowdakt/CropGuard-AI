@@ -472,7 +472,7 @@ function WeatherWidget({ farmId, farmName }) {
   return (
     <div className="card weather-widget fade-in-delay">
       <div className="card-title">🌤 Weather &amp; Disease Risk — {locationLabel}</div>
-      <ErrorBox message={error} />
+      {error && !weather?.note && <ErrorBox message={error} />}
       {weather && (
         <>
           <div className="weather-stats">
@@ -510,6 +510,11 @@ function WeatherWidget({ farmId, farmName }) {
           <p className="weather-updated">
             Last updated: {weather.updated_at ? new Date(weather.updated_at).toLocaleString() : "—"}
           </p>
+          {weather.note && (
+            <p style={{ marginTop: 8, fontSize: "0.82rem", color: "var(--muted)", fontStyle: "italic" }}>
+              {weather.note}
+            </p>
+          )}
         </>
       )}
     </div>

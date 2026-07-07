@@ -16,7 +16,7 @@ if hasattr(sys.stdout, "reconfigure"):
 import requests
 
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
-CACHE_MINUTES = 30
+CACHE_MINUTES = 60
 
 # Hosahalli / Bangalore region default
 DEFAULT_LAT = 13.0827
@@ -25,6 +25,8 @@ DEFAULT_LON = 77.5877
 _cache: dict[tuple[float, float], dict] = {}
 
 DiseaseRisk = Literal["LOW", "MEDIUM", "HIGH"]
+
+UNAVAILABLE_NOTE = "Weather temporarily unavailable — showing last known values"
 
 
 def _cache_key(lat: float, lon: float) -> tuple[float, float]:
@@ -39,11 +41,32 @@ def _calc_disease_risk(humidity: float, temperature: float) -> DiseaseRisk:
     return "LOW"
 
 
+def _safe_fallback(now: datetime | None = None) -> dict:
+    now = now or datetime.utcnow()
+    return {
+        "temperature": 28.0,
+        "humidity": 65.0,
+        "rainfall": 0.0,
+        "windspeed": 12.0,
+        "disease_risk": "MEDIUM",
+        "updated_at": now.isoformat() + "Z",
+        "cached": True,
+        "note": UNAVAILABLE_NOTE,
+    }
+
+
+def _fallback_from_cache(cached_data: dict) -> dict:
+    result = dict(cached_data)
+    result["cached"] = True
+    result["note"] = UNAVAILABLE_NOTE
+    return result
+
+
 def get_weather(lat: float, lon: float) -> dict:
     """
     Fetch current weather from Open-Meteo.
     Returns: temperature, humidity, rainfall, windspeed, disease_risk, updated_at.
-    Results are cached for 30 minutes per coordinate pair.
+    Results are cached for 60 minutes per coordinate pair.
     """
     key = _cache_key(lat, lon)
     now = datetime.utcnow()
@@ -60,6 +83,10 @@ def get_weather(lat: float, lon: float) -> dict:
 
     try:
         response = requests.get(OPEN_METEO_URL, params=params, timeout=10)
+        if response.status_code == 429:
+            if cached:
+                return _fallback_from_cache(cached["data"])
+            return _safe_fallback(now)
         response.raise_for_status()
         current = response.json().get("current", {})
     except requests.RequestException as exc:
