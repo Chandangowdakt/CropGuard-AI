@@ -27,6 +27,7 @@ from PIL import Image
 
 try:
     import torch
+    import torchvision
     import torch.nn as nn
     from torchvision import transforms
     from torchvision.models import mobilenet_v2
@@ -37,6 +38,7 @@ except ImportError:
     nn = None
     transforms = None
     mobilenet_v2 = None
+    print("WARNING: PyTorch not available — AI predictions disabled")
 
 CLASS_NAMES = ["healthy", "diseased", "pest_affected", "water_stressed"]
 PROBLEM_CLASSES = {"diseased", "pest_affected", "water_stressed"}
@@ -95,7 +97,6 @@ if not TORCH_AVAILABLE:
     shadow_model_loaded = False
     model_path_used = None
     shadow_model_path_used = None
-    print("PyTorch not available - AI predictions disabled")
 
 
 class ModelNotFoundError(FileNotFoundError):

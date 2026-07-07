@@ -1,3 +1,6 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.1.0+cpu
+torchvision==0.16.0+cpu
 fastapi==0.136.3
 uvicorn[standard]==0.29.0
 sqlalchemy==2.0.50
@@ -8,7 +11,6 @@ passlib==1.7.4
 bcrypt==5.0.0
 python-multipart==0.0.32
 pillow==12.2.0
-# torch/torchvision: installed by build.sh on Render (CPU wheels). Install locally if missing.
 python-dotenv==1.2.2
 aiofiles==25.1.0
 requests==2.34.2
