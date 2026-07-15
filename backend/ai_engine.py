@@ -1,9 +1,8 @@
 """
-CropGuard AI — chrysanthemum disease detection engine.
-Loads fine-tuned MobileNetV2 from the plantation AI project.
+CropGuard AI — chrysanthemum leaf disease detection engine (primary).
 
-Live model: returned to users (unchanged).
-Shadow model v2: runs in parallel, logged only — never shown to users.
+Live model: 3-class chrysanthemum_leaf_model.pth (Bacterial / Healthy / Septoria).
+Shadow model v2: optional parallel logging only — never shown to users.
 """
 
 import csv
@@ -27,7 +26,7 @@ from PIL import Image
 
 try:
     import torch
-    import torchvision
+    import torchvision  # noqa: F401
     import torch.nn as nn
     from torchvision import transforms
     from torchvision.models import mobilenet_v2
@@ -40,13 +39,16 @@ except ImportError:
     mobilenet_v2 = None
     print("WARNING: PyTorch not available — AI predictions disabled")
 
-CLASS_NAMES = ["healthy", "diseased", "pest_affected", "water_stressed"]
-PROBLEM_CLASSES = {"diseased", "pest_affected", "water_stressed"}
+# Fallback only when checkpoint has no metadata — prefer checkpoint class_to_idx
+CLASS_NAMES = ["Bacterial", "Healthy", "Septoria"]
+PROBLEM_CLASSES = {"Bacterial", "Septoria"}
+HEALTHY_CLASS = "Healthy"
 CONFIDENCE_THRESHOLD = 75.0
 LOW_CONFIDENCE_MESSAGE = "Low confidence — please take a clearer close-up photo of the leaf"
 MODEL_UNAVAILABLE_MESSAGE = "AI model not loaded. Please upload the model file."
 SERVER_UNAVAILABLE_MESSAGE = "AI model not available on server. Use local version for predictions."
 IMAGE_SIZE = 224
+DROPOUT = 0.3
 V2_DROPOUT = 0.3
 
 BACKEND_DIR = Path(__file__).resolve().parent
@@ -64,21 +66,23 @@ SHADOW_CSV_COLUMNS = [
 
 DEFAULT_MODEL_DOWNLOAD_URL = (
     "https://raw.githubusercontent.com/Chandangowdakt/CropGuard-AI/main/"
-    "backend/chrysanthemum_model.pth"
+    "backend/models/chrysanthemum_leaf_model.pth"
 )
-DEFAULT_MODEL_DEST = BACKEND_DIR / "chrysanthemum_model.pth"
+DEFAULT_MODEL_DEST = BACKEND_DIR / "models" / "chrysanthemum_leaf_model.pth"
 MIN_MODEL_BYTES = 5_000_000
 
 MODEL_SEARCH_PATHS = [
-    Path("/tmp/chrysanthemum_model.pth"),
-    BACKEND_DIR / "chrysanthemum_model.pth",
-    BACKEND_DIR / "models" / "chrysanthemum_model.pth",
-    Path("chrysanthemum_model.pth"),
+    BACKEND_DIR / "models" / "chrysanthemum_leaf_model.pth",
+    BACKEND_DIR / "chrysanthemum_leaf_model.pth",
+    Path("/tmp/chrysanthemum_leaf_model.pth"),
 ]
 
 SHADOW_MODEL_SEARCH_PATHS = [
     BACKEND_DIR / "models" / "chrysanthemum_model_v2.pth",
 ]
+
+IMAGENET_MEAN = [0.485, 0.456, 0.406]
+IMAGENET_STD = [0.229, 0.224, 0.225]
 
 _live_bundle = None
 _shadow_bundle = None
@@ -100,7 +104,7 @@ if not TORCH_AVAILABLE:
 
 
 class ModelNotFoundError(FileNotFoundError):
-    """Raised when chrysanthemum_model.pth is missing."""
+    """Raised when chrysanthemum_leaf_model.pth is missing."""
 
 
 class ModelLoadError(RuntimeError):
@@ -112,7 +116,7 @@ def _is_valid_model_file(path: Path) -> bool:
 
 
 def _resolve_model_path() -> Path | None:
-    env_path = os.getenv("CROPGUARD_MODEL_PATH")
+    env_path = os.getenv("CROPGUARD_MODEL_PATH") or os.getenv("CROPGUARD_LEAF_MODEL_PATH")
     if env_path:
         candidate = Path(env_path)
         if _is_valid_model_file(candidate):
@@ -125,22 +129,23 @@ def _resolve_model_path() -> Path | None:
 
 def ensure_model_available() -> Path | None:
     """
-    Ensure the live production model exists on disk.
+    Ensure the live leaf model exists on disk.
 
-    On Render the .pth file is not in the repo history by default; download it once
-    from GitHub (or CROPGUARD_MODEL_URL) before inference.
+    On Render the .pth may be downloaded once from GitHub if missing.
     """
     existing = _resolve_model_path()
     if existing is not None:
         return existing
 
-    url = os.getenv("CROPGUARD_MODEL_URL", DEFAULT_MODEL_DOWNLOAD_URL)
+    url = os.getenv("CROPGUARD_MODEL_URL") or os.getenv(
+        "CROPGUARD_LEAF_MODEL_URL", DEFAULT_MODEL_DOWNLOAD_URL
+    )
     dest = DEFAULT_MODEL_DEST
     if _is_valid_model_file(dest):
         return dest
 
     try:
-        print(f"Downloading chrysanthemum_model.pth from {url} ...")
+        print(f"Downloading chrysanthemum_leaf_model.pth from {url} ...")
         dest.parent.mkdir(parents=True, exist_ok=True)
         request = urllib.request.Request(url, headers={"User-Agent": "CropGuard-AI/1.0"})
         with urllib.request.urlopen(request, timeout=120) as response:
@@ -177,23 +182,31 @@ def _class_names_from_checkpoint(checkpoint: dict) -> list[str]:
 
 
 def _build_transform(image_size: int = IMAGE_SIZE):
-    """Same validation transforms as phase4_train.py (no augmentation)."""
+    """Same val transforms as leaf model training (Resize 256 → CenterCrop 224)."""
     return transforms.Compose([
-        transforms.Resize((image_size, image_size)),
+        transforms.Resize(256),
+        transforms.CenterCrop(image_size),
         transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+        transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
     ])
 
 
 def _load_live_checkpoint(path: Path, device: torch.device) -> dict:
+    """Load 3-class leaf MobileNetV2 (Dropout 0.3 → Linear)."""
     checkpoint = torch.load(path, map_location=device, weights_only=False)
     class_names = _class_names_from_checkpoint(checkpoint)
+    class_to_idx = checkpoint.get("class_to_idx") or {
+        name: idx for idx, name in enumerate(class_names)
+    }
     num_classes = checkpoint.get("num_classes", len(class_names))
     image_size = checkpoint.get("image_size", IMAGE_SIZE)
 
     model = mobilenet_v2(weights=None)
     in_features = model.classifier[1].in_features
-    model.classifier[1] = nn.Linear(in_features, num_classes)
+    model.classifier = nn.Sequential(
+        nn.Dropout(p=DROPOUT),
+        nn.Linear(in_features, num_classes),
+    )
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device)
     model.eval()
@@ -202,10 +215,10 @@ def _load_live_checkpoint(path: Path, device: torch.device) -> dict:
         "model": model,
         "transform": _build_transform(image_size),
         "class_names": class_names,
-        "class_to_idx": checkpoint.get("class_to_idx"),
+        "class_to_idx": class_to_idx,
         "device": device,
         "path": path,
-        "variant": "live",
+        "variant": "live_leaf",
     }
 
 
@@ -237,7 +250,7 @@ def _load_shadow_checkpoint(path: Path, device: torch.device) -> dict:
 
 
 def load_engine() -> dict | None:
-    """Load the live model used for all user-facing predictions."""
+    """Load the live 3-class leaf model used for all user-facing predictions."""
     global _live_bundle, _bundle, model_loaded, _resolved_path, model_path_used
     if not TORCH_AVAILABLE:
         model_loaded = False
@@ -250,6 +263,7 @@ def load_engine() -> dict | None:
     if _live_bundle is not None:
         return _live_bundle
 
+    ensure_model_available()
     _resolved_path = _resolve_model_path()
     model_path_used = _resolved_path
     if _resolved_path is None:
@@ -258,10 +272,14 @@ def load_engine() -> dict | None:
         return None
 
     try:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = torch.device("cpu")
         _live_bundle = _load_live_checkpoint(_resolved_path, device)
         _bundle = _live_bundle
         model_loaded = True
+        print(
+            f"Live leaf model loaded: {_resolved_path} "
+            f"(classes: {_live_bundle['class_names']})"
+        )
         return _live_bundle
     except Exception as e:
         model_loaded = False
@@ -292,7 +310,7 @@ def load_shadow_engine() -> dict | None:
         return None
 
     try:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = torch.device("cpu")
         _shadow_bundle = _load_shadow_checkpoint(_shadow_resolved_path, device)
         shadow_model_loaded = True
         print(f"Shadow model v2 loaded (logging only): {_shadow_resolved_path}")
@@ -319,7 +337,12 @@ def get_model_status() -> dict:
         return {"loaded": False, "path": None}
 
     if _live_bundle is not None and _resolved_path is not None:
-        return {"loaded": True, "path": str(_resolved_path)}
+        return {
+            "loaded": True,
+            "path": str(_resolved_path),
+            "classes": _live_bundle["class_names"],
+            "class_to_idx": _live_bundle.get("class_to_idx"),
+        }
 
     resolved = _resolve_model_path()
     if resolved is None:
@@ -331,7 +354,12 @@ def get_model_status() -> dict:
     try:
         load_engine()
         if model_loaded and _resolved_path is not None:
-            return {"loaded": True, "path": str(_resolved_path)}
+            return {
+                "loaded": True,
+                "path": str(_resolved_path),
+                "classes": _live_bundle["class_names"],
+                "class_to_idx": _live_bundle.get("class_to_idx"),
+            }
     except ModelLoadError:
         pass
 
@@ -523,7 +551,7 @@ def predict_image(image_path: str | Path) -> dict:
     Run inference on an image file.
 
     Returns:
-        {"class": "diseased", "confidence": 99.7, "is_problem": true}
+        {"class": "Bacterial", "confidence": 99.7, "is_problem": true}
     """
     if not TORCH_AVAILABLE or not model_loaded:
         load_all_engines()
@@ -555,8 +583,8 @@ def predict_image_bytes(image_bytes: bytes) -> dict:
 
     Returns:
         {
-            "class": "diseased" | "uncertain" | "unavailable",
-            "actual_class": "diseased",
+            "class": "Bacterial" | "Healthy" | "Septoria" | "uncertain" | "unavailable",
+            "actual_class": "Bacterial",
             "confidence": 99.7,
             "is_problem": true,
             "message": "...optional warning...",
@@ -640,6 +668,7 @@ def model_status() -> dict:
             "loaded": True,
             "path": status["path"],
             "classes": bundle["class_names"],
+            "class_to_idx": bundle.get("class_to_idx"),
             "device": str(bundle["device"]),
         }
     except ModelLoadError as e:

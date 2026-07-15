@@ -68,6 +68,21 @@ def _migrate_detections():
             conn.execute(text("ALTER TABLE detections ADD COLUMN longitude REAL"))
 
 
+def _migrate_scan_sessions():
+    """Add bacterial_count / septoria_count; keep legacy columns intact."""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    if "scan_sessions" not in inspector.get_table_names():
+        return
+    columns = {c["name"] for c in inspector.get_columns("scan_sessions")}
+    with engine.begin() as conn:
+        if "bacterial_count" not in columns:
+            conn.execute(text("ALTER TABLE scan_sessions ADD COLUMN bacterial_count INTEGER DEFAULT 0"))
+        if "septoria_count" not in columns:
+            conn.execute(text("ALTER TABLE scan_sessions ADD COLUMN septoria_count INTEGER DEFAULT 0"))
+
+
 def _backfill_manager_assignments():
     """Copy legacy Farm.manager_id links into manager_farm_assignments."""
     from sqlalchemy import inspect
@@ -110,4 +125,5 @@ def init_db():
     Base.metadata.create_all(bind=engine)
     _migrate_farms()
     _migrate_detections()
+    _migrate_scan_sessions()
     _backfill_manager_assignments()

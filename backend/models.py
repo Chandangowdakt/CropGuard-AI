@@ -103,9 +103,13 @@ class ScanSession(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     total_scanned: Mapped[int] = mapped_column(Integer, default=0)
     healthy_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Legacy 4-class columns kept for existing DBs (no longer written by new code)
     diseased_count: Mapped[int] = mapped_column(Integer, default=0)
     pest_count: Mapped[int] = mapped_column(Integer, default=0)
     water_stressed_count: Mapped[int] = mapped_column(Integer, default=0)
+    # New 3-class leaf counters
+    bacterial_count: Mapped[int] = mapped_column(Integer, default=0)
+    septoria_count: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(20), default="active")
 
     farm: Mapped["Farm"] = relationship("Farm", back_populates="scan_sessions")

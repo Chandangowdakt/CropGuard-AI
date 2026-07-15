@@ -21,6 +21,7 @@ from auth import (
     require_roles,
     user_to_out,
 )
+from class_constants import is_healthy, is_problem, normalize_class
 from database import get_db
 from models import Detection, Farm, ManagerFarmAssignment, ScanSession, User
 from schemas import (
@@ -49,8 +50,6 @@ from schemas import (
 
 from scan_reporting import build_daily_digest, send_daily_digest_email
 from ai_engine import get_shadow_comparison_stats
-
-PROBLEM_CLASSES = {"diseased", "pest_affected", "water_stressed"}
 
 # ── Authentication routes ───────────────────────────────────────────────────────
 auth_router = APIRouter(prefix="/api/auth", tags=["authentication"])
@@ -175,7 +174,7 @@ def _farm_health(db: Session, farm_id: int) -> tuple[float, str | None]:
     )
     if not detections:
         return 100.0, None
-    healthy = sum(1 for d in detections if d.predicted_class == "healthy")
+    healthy = sum(1 for d in detections if is_healthy(d.predicted_class))
     score = round((healthy / len(detections)) * 100, 1)
     return score, detections[0].timestamp
 
@@ -206,10 +205,11 @@ def admin_platform_stats(
     problem_counts: Counter[str] = Counter()
     healthy_total = 0
     for d in all_detections:
-        if d.predicted_class == "healthy":
+        canonical = normalize_class(d.predicted_class)
+        if is_healthy(canonical):
             healthy_total += 1
-        elif d.predicted_class in PROBLEM_CLASSES:
-            problem_counts[d.predicted_class] += 1
+        elif is_problem(canonical):
+            problem_counts[canonical] += 1
 
     most_common_problem = problem_counts.most_common(1)[0][0] if problem_counts else None
     total_det = len(all_detections)
@@ -219,16 +219,17 @@ def admin_platform_stats(
     for offset in range(6, -1, -1):
         day = today - timedelta(days=offset)
         day_dets = [d for d in all_detections if d.timestamp.date() == day]
-        counts: dict[str, int] = {}
+        counts = {"Healthy": 0, "Bacterial": 0, "Septoria": 0}
         for d in day_dets:
-            counts[d.predicted_class] = counts.get(d.predicted_class, 0) + 1
+            canonical = normalize_class(d.predicted_class)
+            if canonical in counts:
+                counts[canonical] += 1
         daily_trends.append(
             DailyTrendOut(
                 date=day.isoformat(),
-                healthy=counts.get("healthy", 0),
-                diseased=counts.get("diseased", 0),
-                pest_affected=counts.get("pest_affected", 0),
-                water_stressed=counts.get("water_stressed", 0),
+                healthy=counts["Healthy"],
+                bacterial=counts["Bacterial"],
+                septoria=counts["Septoria"],
                 total=len(day_dets),
             )
         )
@@ -242,7 +243,9 @@ def admin_platform_stats(
         most_active_farm = farm.name if farm else f"Farm #{top_farm_id}"
 
     today_problems: Counter[str] = Counter(
-        d.predicted_class for d in today_detections if d.predicted_class in PROBLEM_CLASSES
+        normalize_class(d.predicted_class)
+        for d in today_detections
+        if is_problem(d.predicted_class)
     )
     most_common_disease_today = (
         today_problems.most_common(1)[0][0] if today_problems else None
@@ -379,7 +382,13 @@ def admin_change_user_role(
 
 
 def _session_issues(session: ScanSession) -> int:
-    return session.diseased_count + session.pest_count + session.water_stressed_count
+    return (
+        getattr(session, "bacterial_count", 0)
+        + getattr(session, "septoria_count", 0)
+        + session.diseased_count
+        + session.pest_count
+        + session.water_stressed_count
+    )
 
 
 def _session_health_score(session: ScanSession) -> float | None:
@@ -467,6 +476,8 @@ def admin_scan_session_detail(
     return AdminScanSessionDetailOut(
         **base.model_dump(),
         healthy_count=session.healthy_count,
+        bacterial_count=getattr(session, "bacterial_count", 0),
+        septoria_count=getattr(session, "septoria_count", 0),
         diseased_count=session.diseased_count,
         pest_count=session.pest_count,
         water_stressed_count=session.water_stressed_count,

@@ -618,10 +618,9 @@ tr:hover td { background: rgba(244, 247, 244, 0.6); }
   color: #fff;
   text-transform: capitalize;
 }
-.badge-healthy { background: var(--secondary); }
-.badge-diseased { background: var(--danger); }
-.badge-pest { background: var(--warning); color: #fff; }
-.badge-water { background: var(--water); }
+.badge-Healthy, .badge-healthy { background: var(--secondary); }
+.badge-Bacterial, .badge-bacterial, .badge-diseased, .badge-pest { background: var(--danger); }
+.badge-Septoria, .badge-septoria, .badge-water { background: var(--warning); color: #fff; }
 .badge-uncertain { background: var(--warning); color: #fff; }
 
 /* Upload zone */
@@ -651,8 +650,9 @@ tr:hover td { background: rgba(244, 247, 244, 0.6); }
 }
 .result-healthy { background: #ecfdf3; border: 2px solid var(--secondary); }
 .result-problem { background: #fef2f2; border: 2px solid var(--danger); }
+.result-septoria { background: #fff7ed; border: 2px solid var(--warning); }
 .result-pest { background: #fff7ed; border: 2px solid var(--warning); }
-.result-water { background: #e0f4ff; border: 2px solid var(--water); }
+.result-water { background: #fff7ed; border: 2px solid var(--warning); }
 .result-uncertain { background: #fff7ed; border: 2px solid var(--warning); }
 .result-uncertain-title {
   font-size: 1.05rem;
@@ -1122,6 +1122,10 @@ tr:hover td { background: rgba(244, 247, 244, 0.6); }
   background: linear-gradient(145deg, #fef2f2, #fee2e2);
   border-color: var(--danger);
 }
+.analysis-result-card.analysis-septoria {
+  background: linear-gradient(145deg, #fff7ed, #ffedd5);
+  border-color: var(--warning);
+}
 .analysis-result-card.analysis-pest {
   background: linear-gradient(145deg, #fff7ed, #ffedd5);
   border-color: var(--warning);
@@ -1137,8 +1141,9 @@ tr:hover td { background: rgba(244, 247, 244, 0.6); }
 }
 .analysis-healthy .giant-label { color: var(--primary); }
 .analysis-diseased .giant-label { color: var(--danger); }
+.analysis-septoria .giant-label { color: #c2410c; }
 .analysis-pest .giant-label { color: #c2410c; }
-.analysis-water .giant-label { color: var(--water); }
+.analysis-water .giant-label { color: #c2410c; }
 
 .giant-confidence {
   font-size: 3.5rem;
@@ -1296,9 +1301,11 @@ tr:hover td { background: rgba(244, 247, 244, 0.6); }
   font-size: 1.6rem;
   font-weight: 800;
 }
+.stat-bacterial .mini-value { color: var(--danger); }
+.stat-septoria .mini-value { color: var(--warning); }
 .stat-diseased .mini-value { color: var(--danger); }
 .stat-pest .mini-value { color: var(--warning); }
-.stat-water .mini-value { color: var(--water); }
+.stat-water .mini-value { color: var(--warning); }
 .stat-week .mini-value { color: var(--muted); }
 
 .alert-filters {
@@ -1345,9 +1352,8 @@ tr:hover td { background: rgba(244, 247, 244, 0.6); }
   width: 6px;
   flex-shrink: 0;
 }
-.strip-diseased { background: var(--danger); }
-.strip-pest { background: var(--warning); }
-.strip-water { background: var(--water); }
+.strip-bacterial, .strip-diseased, .strip-pest { background: var(--danger); }
+.strip-septoria, .strip-water { background: var(--warning); }
 .strip-default { background: var(--border); }
 
 .alert-card-body {
@@ -1458,9 +1464,8 @@ tr:hover td { background: rgba(244, 247, 244, 0.6); }
   margin-top: 6px;
   flex-shrink: 0;
 }
-.notif-dot.strip-diseased { background: var(--danger); }
-.notif-dot.strip-pest { background: var(--warning); }
-.notif-dot.strip-water { background: var(--water); }
+.notif-dot.strip-bacterial, .notif-dot.strip-diseased { background: var(--danger); }
+.notif-dot.strip-septoria, .notif-dot.strip-pest, .notif-dot.strip-water { background: var(--warning); }
 .notif-dot.strip-default { background: var(--muted); }
 .notif-item-title {
   font-weight: 700;
@@ -1625,9 +1630,8 @@ tr:hover td { background: rgba(244, 247, 244, 0.6); }
 }
 .trend-seg { width: 100%; min-height: 2px; transition: height 0.5s ease; }
 .seg-healthy { background: var(--secondary); }
-.seg-diseased { background: var(--danger); }
-.seg-pest { background: var(--warning); }
-.seg-water { background: var(--water); }
+.seg-bacterial, .seg-diseased, .seg-pest { background: var(--danger); }
+.seg-septoria, .seg-water { background: var(--warning); }
 .seg-empty { background: var(--border); }
 .trend-day-label {
   font-size: 0.68rem;
@@ -1657,9 +1661,8 @@ tr:hover td { background: rgba(244, 247, 244, 0.6); }
   vertical-align: middle;
 }
 .leg-healthy { background: var(--secondary); }
-.leg-diseased { background: var(--danger); }
-.leg-pest { background: var(--warning); }
-.leg-water { background: var(--water); }
+.leg-bacterial, .leg-diseased { background: var(--danger); }
+.leg-septoria, .leg-pest, .leg-water { background: var(--warning); }
 
 .admin-chart-insights {
   display: flex;
@@ -1710,9 +1713,8 @@ tr:hover td { background: rgba(244, 247, 244, 0.6); }
   margin-top: 6px;
   flex-shrink: 0;
 }
-.activity-dot.strip-diseased { background: var(--danger); }
-.activity-dot.strip-pest { background: var(--warning); }
-.activity-dot.strip-water { background: var(--water); }
+.activity-dot.strip-bacterial, .activity-dot.strip-diseased { background: var(--danger); }
+.activity-dot.strip-septoria, .activity-dot.strip-pest, .activity-dot.strip-water { background: var(--warning); }
 .activity-dot.strip-default { background: var(--secondary); }
 .activity-msg { font-size: 0.88rem; font-weight: 600; color: var(--text); }
 .activity-time { font-size: 0.78rem; color: var(--muted); margin-top: 2px; }
@@ -1951,9 +1953,8 @@ tr:hover td { background: rgba(244, 247, 244, 0.6); }
   font-weight: 700;
 }
 .pill-healthy { background: #ecfdf3; color: #15803d; }
-.pill-diseased { background: #fef2f2; color: #b91c1c; }
-.pill-pest { background: #fff7ed; color: #c2410c; }
-.pill-water { background: #eff6ff; color: #1d4ed8; }
+.pill-bacterial, .pill-diseased { background: #fef2f2; color: #b91c1c; }
+.pill-septoria, .pill-pest, .pill-water { background: #fff7ed; color: #c2410c; }
 .admin-session-flagged-title { margin: 0 0 12px; font-size: 0.95rem; }
 .admin-flagged-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 12px; }
 .admin-flagged-item {
@@ -2089,7 +2090,7 @@ tr:hover td { background: rgba(244, 247, 244, 0.6); }
 
 .report-breakdown-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 14px;
   margin-bottom: 20px;
 }
@@ -2100,9 +2101,8 @@ tr:hover td { background: rgba(244, 247, 244, 0.6); }
   text-align: center;
 }
 .breakdown-healthy { background: #ecfdf3; border-color: var(--secondary); }
-.breakdown-diseased { background: #fef2f2; border-color: var(--danger); }
-.breakdown-pest { background: #fff7ed; border-color: var(--warning); }
-.breakdown-water { background: #e0f4ff; border-color: var(--water); }
+.breakdown-bacterial, .breakdown-diseased { background: #fef2f2; border-color: var(--danger); }
+.breakdown-septoria, .breakdown-pest, .breakdown-water { background: #fff7ed; border-color: var(--warning); }
 .rb-label { font-size: 0.78rem; font-weight: 700; color: var(--muted); text-transform: uppercase; }
 .rb-count { font-size: 2rem; font-weight: 900; margin: 6px 0; color: var(--text); }
 .rb-pct { font-size: 0.82rem; color: var(--muted); }
@@ -2327,7 +2327,7 @@ tr:hover td { background: rgba(244, 247, 244, 0.6); }
 }
 .live-summary-breakdown {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 10px;
 }
 .live-breakdown-item {
@@ -2339,9 +2339,8 @@ tr:hover td { background: rgba(244, 247, 244, 0.6); }
   border: 1px solid var(--border);
 }
 .live-breakdown-item.healthy { background: #ecfdf3; color: #15803d; }
-.live-breakdown-item.diseased { background: #fef2f2; color: #b91c1c; }
-.live-breakdown-item.pest { background: #fff7ed; color: #c2410c; }
-.live-breakdown-item.water { background: #e0f4ff; color: var(--water); }
+.live-breakdown-item.bacterial, .live-breakdown-item.diseased { background: #fef2f2; color: #b91c1c; }
+.live-breakdown-item.septoria, .live-breakdown-item.pest, .live-breakdown-item.water { background: #fff7ed; color: #c2410c; }
 .live-flagged-list {
   list-style: none;
   display: flex;

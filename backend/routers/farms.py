@@ -15,12 +15,11 @@ from auth import (
     get_current_user,
     get_farm_for_user,
 )
+from class_constants import empty_class_counts, is_problem, normalize_class
 from database import get_db
 from models import Detection, Farm, User
 from schemas import FarmCreate, FarmOut, FarmStatsOut, FarmUpdate, FarmWeatherOut
 from weather import DEFAULT_LAT, DEFAULT_LON, get_weather
-
-PROBLEM_CLASSES = {"diseased", "pest_affected", "water_stressed"}
 
 router = APIRouter(prefix="/api/farms", tags=["farms"])
 
@@ -71,14 +70,16 @@ def farm_stats(
         .order_by(Detection.timestamp.desc())
         .all()
     )
-    class_counts: dict[str, int] = {}
+    class_counts = empty_class_counts()
     problems_found = 0
     for d in detections:
-        class_counts[d.predicted_class] = class_counts.get(d.predicted_class, 0) + 1
-        if d.predicted_class in PROBLEM_CLASSES:
+        canonical = normalize_class(d.predicted_class)
+        if canonical in class_counts:
+            class_counts[canonical] += 1
+        if is_problem(d.predicted_class):
             problems_found += 1
     total = len(detections)
-    healthy = class_counts.get("healthy", 0)
+    healthy = class_counts.get("Healthy", 0)
     health_score = round((healthy / total) * 100, 1) if total else 100.0
     last_scan = detections[0].timestamp if detections else None
     return FarmStatsOut(

@@ -123,13 +123,19 @@ function CardSkeleton({ titleWidth = "55%", lines = 4 }) {
 
 function ClassBadge({ cls }) {
   const map = {
-    healthy: "badge-healthy",
-    diseased: "badge-diseased",
-    pest_affected: "badge-pest",
-    water_stressed: "badge-water",
+    Healthy: "badge-Healthy",
+    healthy: "badge-Healthy",
+    Bacterial: "badge-Bacterial",
+    bacterial: "badge-Bacterial",
+    diseased: "badge-Bacterial",
+    pest_affected: "badge-Bacterial",
+    Septoria: "badge-Septoria",
+    septoria: "badge-Septoria",
+    water_stressed: "badge-Septoria",
     uncertain: "badge-uncertain",
   };
-  return <span className={`badge ${map[cls] || "badge-healthy"}`}>{(cls || "").replace(/_/g, " ")}</span>;
+  const display = normalizeClassKey(cls) || cls || "";
+  return <span className={`badge ${map[cls] || map[display] || "badge-Healthy"}`}>{display.replace(/_/g, " ")}</span>;
 }
 
 function AlertThumb({ alertId }) {
@@ -185,6 +191,55 @@ function formatCrop(crop) {
   const found = CROP_OPTIONS.find((c) => c.value === (crop || "").toLowerCase());
   if (found) return found.label;
   return (crop || "Crop").replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function normalizeClassKey(cls) {
+  const raw = cls || "";
+  const c = raw.toLowerCase();
+  if (c === "healthy") return "Healthy";
+  if (c === "bacterial" || c === "diseased" || c === "pest_affected") return "Bacterial";
+  if (c === "septoria" || c === "water_stressed") return "Septoria";
+  if (raw === "Healthy" || raw === "Bacterial" || raw === "Septoria") return raw;
+  return raw;
+}
+
+function classLookupKey(cls) {
+  const norm = normalizeClassKey(cls);
+  if (norm === "Healthy") return "healthy";
+  if (norm === "Bacterial") return "bacterial";
+  if (norm === "Septoria") return "septoria";
+  return (cls || "healthy").toLowerCase();
+}
+
+function isHealthyClass(cls) {
+  return normalizeClassKey(cls) === "Healthy";
+}
+
+function isProblemClass(cls) {
+  const norm = normalizeClassKey(cls);
+  return norm === "Bacterial" || norm === "Septoria";
+}
+
+function countHealthyInCounts(counts) {
+  return (counts?.healthy || 0) + (counts?.Healthy || 0);
+}
+
+function aggregateClassCounts(counts) {
+  const c = counts || {};
+  return {
+    Healthy: countHealthyInCounts(c),
+    Bacterial: (c.Bacterial || 0) + (c.bacterial || 0) + (c.diseased || 0) + (c.pest_affected || 0),
+    Septoria: (c.Septoria || 0) + (c.septoria || 0) + (c.water_stressed || 0),
+  };
+}
+
+function dayTrendCounts(day) {
+  const d = day || {};
+  return {
+    healthy: (d.healthy || 0) + (d.Healthy || 0),
+    bacterial: (d.bacterial || 0) + (d.Bacterial || 0) + (d.diseased || 0) + (d.pest_affected || 0),
+    septoria: (d.septoria || 0) + (d.Septoria || 0) + (d.water_stressed || 0),
+  };
 }
 
 function healthScoreClass(score) {
@@ -371,13 +426,12 @@ function StatsRow({ farms, detectionsToday, activeAlerts, healthScore, loading }
 
 function HealthChart({ summary, loading }) {
   const classes = [
-    { key: "healthy", label: "Healthy", color: "var(--secondary)" },
-    { key: "diseased", label: "Diseased", color: "var(--danger)" },
-    { key: "pest_affected", label: "Pest", color: "var(--warning)" },
-    { key: "water_stressed", label: "Water Stressed", color: "var(--water)" },
+    { key: "Healthy", label: "Healthy", color: "var(--secondary)" },
+    { key: "Bacterial", label: "Bacterial", color: "var(--danger)" },
+    { key: "Septoria", label: "Septoria", color: "var(--warning)" },
   ];
-  const counts = summary?.class_counts || {};
-  const total = Object.values(counts).reduce((a, b) => a + b, 0) || 1;
+  const agg = aggregateClassCounts(summary?.class_counts);
+  const total = Object.values(agg).reduce((a, b) => a + b, 0) || 1;
 
   if (loading) return <CardSkeleton titleWidth="60%" lines={5} />;
 
@@ -386,7 +440,7 @@ function HealthChart({ summary, loading }) {
       <div className="card-title">📊 Farm Health Overview</div>
       <div className="health-chart">
         {classes.map((c) => {
-          const n = counts[c.key] || 0;
+          const n = agg[c.key] || 0;
           const pct = Math.round((n / total) * 100);
           return (
             <div className="bar-row" key={c.key}>
@@ -400,7 +454,7 @@ function HealthChart({ summary, loading }) {
           );
         })}
       </div>
-      {total <= 1 && !counts.healthy && (
+      {total <= 1 && !agg.Healthy && (
         <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 12 }}>No detections yet — upload a photo to analyse.</p>
       )}
     </div>
@@ -536,9 +590,9 @@ function timeAgo(ts) {
 }
 
 function alertStripClass(cls) {
-  if (cls === "diseased") return "strip-diseased";
-  if (cls === "pest_affected") return "strip-pest";
-  if (cls === "water_stressed") return "strip-water";
+  const norm = normalizeClassKey(cls);
+  if (norm === "Bacterial") return "strip-bacterial";
+  if (norm === "Septoria") return "strip-septoria";
   return "strip-default";
 }
 
@@ -609,27 +663,22 @@ function ImageModal({ alert, farm, onClose }) {
 const ALERT_FILTERS = [
   { id: "all", label: "All" },
   { id: "unread", label: "Unread" },
-  { id: "diseased", label: "Diseased" },
-  { id: "pest", label: "Pest" },
-  { id: "water_stressed", label: "Water Stressed" },
+  { id: "bacterial", label: "Bacterial" },
+  { id: "septoria", label: "Septoria" },
 ];
 
 function AlertStatsPanel({ stats, loading }) {
   if (loading) return <Spinner label="Loading alert stats…" />;
-  const counts = stats?.class_counts || {};
+  const agg = aggregateClassCounts(stats?.class_counts);
   return (
     <div className="alert-mini-stats">
-      <div className="alert-mini-stat stat-diseased">
-        <div className="mini-label">Diseased today</div>
-        <div className="mini-value">{counts.diseased || 0}</div>
+      <div className="alert-mini-stat stat-bacterial">
+        <div className="mini-label">Bacterial today</div>
+        <div className="mini-value">{agg.Bacterial || 0}</div>
       </div>
-      <div className="alert-mini-stat stat-pest">
-        <div className="mini-label">Pest today</div>
-        <div className="mini-value">{counts.pest_affected || 0}</div>
-      </div>
-      <div className="alert-mini-stat stat-water">
-        <div className="mini-label">Water stress today</div>
-        <div className="mini-value">{counts.water_stressed || 0}</div>
+      <div className="alert-mini-stat stat-septoria">
+        <div className="mini-label">Septoria today</div>
+        <div className="mini-value">{agg.Septoria || 0}</div>
       </div>
       <div className="alert-mini-stat stat-week">
         <div className="mini-label">Total this week</div>
@@ -919,17 +968,21 @@ function AlertsTable({ alerts, farms, onMarkRead, loading, error }) {
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 
 const CLASS_DISPLAY = {
-  healthy: { label: "HEALTHY", css: "analysis-healthy", bar: "var(--secondary)" },
-  diseased: { label: "DISEASED", css: "analysis-diseased", bar: "var(--danger)" },
-  pest_affected: { label: "PEST AFFECTED", css: "analysis-pest", bar: "var(--warning)" },
-  water_stressed: { label: "WATER STRESSED", css: "analysis-water", bar: "var(--water)" },
+  healthy: { label: "HEALTHY ✓", css: "analysis-healthy", bar: "var(--secondary)" },
+  bacterial: { label: "BACTERIAL INFECTION ⚠", css: "analysis-diseased", bar: "var(--danger)" },
+  septoria: { label: "SEPTORIA LEAF SPOT ⚠", css: "analysis-septoria", bar: "var(--warning)" },
+  diseased: { label: "BACTERIAL INFECTION ⚠", css: "analysis-diseased", bar: "var(--danger)" },
+  pest_affected: { label: "BACTERIAL INFECTION ⚠", css: "analysis-diseased", bar: "var(--danger)" },
+  water_stressed: { label: "SEPTORIA LEAF SPOT ⚠", css: "analysis-septoria", bar: "var(--warning)" },
 };
 
 const ANALYSIS_ADVICE = {
-  healthy: "Your plant looks healthy! Monitor regularly.",
-  diseased: "Disease detected! Recommended: Apply fungicide within 48 hours. Contact your agronomist.",
-  pest_affected: "Pest damage detected! Recommended: Apply pesticide. Check surrounding plants.",
-  water_stressed: "Water stress detected! Recommended: Water this plant immediately. Check irrigation.",
+  healthy: "No disease detected",
+  bacterial: "Apply copper-based bactericide immediately",
+  septoria: "Apply fungicide and remove affected leaves",
+  diseased: "Apply copper-based bactericide immediately",
+  pest_affected: "Apply copper-based bactericide immediately",
+  water_stressed: "Apply fungicide and remove affected leaves",
 };
 
 function validateImageFile(f) {
@@ -1283,7 +1336,8 @@ function AnalysisPage({ farms, farmId, onFarmChange, onAnalyzed }) {
 
   const cls2 = result?.prediction?.class || result?.prediction?.predicted_class;
   const conf2 = result?.prediction?.confidence ?? 0;
-  const display = CLASS_DISPLAY[cls2] || CLASS_DISPLAY.healthy;
+  const lookupKey = classLookupKey(cls2);
+  const display = CLASS_DISPLAY[lookupKey] || CLASS_DISPLAY.healthy;
 
   useEffect(() => {
     if (!result || analyzing) return;
@@ -1291,12 +1345,14 @@ function AnalysisPage({ farms, farmId, onFarmChange, onAnalyzed }) {
     if (lastToastRef.current === key) return;
     lastToastRef.current = key;
 
-    if (cls2 === "healthy") {
+    if (lookupKey === "healthy") {
       pushToast({ type: "success", message: "Analysis complete — Healthy plant detected" });
-    } else if (cls2 === "diseased") {
-      pushToast({ type: "danger", message: "ALERT — Diseased plant detected at Hosahalli Block A" });
+    } else if (lookupKey === "bacterial") {
+      pushToast({ type: "danger", message: "ALERT — Bacterial infection detected" });
+    } else if (lookupKey === "septoria") {
+      pushToast({ type: "danger", message: "ALERT — Septoria leaf spot detected" });
     }
-  }, [result, analyzing, cls2, conf2, pushToast]);
+  }, [result, analyzing, cls2, conf2, lookupKey, pushToast]);
 
   async function copyShareText() {
     const shareText = `${display.label} detected at ${Number(conf2 || 0).toFixed(1)}% confidence — CropGuard AI`;
@@ -1323,7 +1379,7 @@ function AnalysisPage({ farms, farmId, onFarmChange, onAnalyzed }) {
       <div className="analysis-header">
         <div>
           <h2>Plant Health Analysis</h2>
-          <p>AI-powered disease, pest, and water stress detection</p>
+          <p>AI-powered leaf disease detection — Healthy, Bacterial, and Septoria</p>
         </div>
         <div className="analysis-farm-select">
           <label>Analysing for:</label>
@@ -1430,7 +1486,7 @@ function AnalysisPage({ farms, farmId, onFarmChange, onAnalyzed }) {
 
             <div className="analysis-action-panel card">
               <h4>Recommendation</h4>
-              <p>{ANALYSIS_ADVICE[cls2] || ANALYSIS_ADVICE.healthy}</p>
+              <p>{ANALYSIS_ADVICE[lookupKey] || ANALYSIS_ADVICE.healthy}</p>
               {selectedFarm && (
                 <p className="analysis-farm-note">Farm: <strong>{selectedFarm.name}</strong></p>
               )}
@@ -1548,10 +1604,13 @@ function QuickAnalysis({ farmId, farms, onAnalyzed }) {
       const key = `${saveClass || "unknown"}_${Number(conf ?? 0).toFixed(3)}_${data.detection?.id || ""}`;
       if (lastToastRef.current !== key) {
         lastToastRef.current = key;
-        if (cls !== "uncertain" && Number(conf ?? 0) >= 75 && saveClass === "healthy") {
+        const saveLookup = classLookupKey(saveClass);
+        if (cls !== "uncertain" && Number(conf ?? 0) >= 75 && saveLookup === "healthy") {
           pushToast({ type: "success", message: "Analysis complete — Healthy plant detected" });
-        } else if (cls !== "uncertain" && Number(conf ?? 0) >= 75 && saveClass === "diseased") {
-          pushToast({ type: "danger", message: "ALERT — Diseased plant detected at Hosahalli Block A" });
+        } else if (cls !== "uncertain" && Number(conf ?? 0) >= 75 && saveLookup === "bacterial") {
+          pushToast({ type: "danger", message: "ALERT — Bacterial infection detected" });
+        } else if (cls !== "uncertain" && Number(conf ?? 0) >= 75 && saveLookup === "septoria") {
+          pushToast({ type: "danger", message: "ALERT — Septoria leaf spot detected" });
         }
       }
     } catch (err) {
@@ -1567,12 +1626,12 @@ function QuickAnalysis({ farmId, farms, onAnalyzed }) {
   const conf2 = pred2.confidence ?? result?.detection?.confidence;
   const isUnavailable = cls2 === "unavailable";
   const isUncertain = !isUnavailable && (cls2 === "uncertain" || (conf2 != null && conf2 < 75));
+  const actualLookup = classLookupKey(actualClass);
   let resultClass = "result-healthy";
   if (isUnavailable) resultClass = "result-uncertain";
   else if (isUncertain) resultClass = "result-uncertain";
-  else if (actualClass === "water_stressed") resultClass = "result-water";
-  else if (actualClass === "pest_affected") resultClass = "result-pest";
-  else if (actualClass && actualClass !== "healthy") resultClass = "result-problem";
+  else if (actualLookup === "bacterial") resultClass = "result-problem";
+  else if (actualLookup === "septoria") resultClass = "result-septoria";
 
   return (
     <div className="card fade-in-delay">
@@ -1847,10 +1906,10 @@ function FarmDetailPage({ farmId, onBack, onAnalyse, onRefresh }) {
     let problems = 0;
     dets.forEach((d) => {
       class_counts[d.predicted_class] = (class_counts[d.predicted_class] || 0) + 1;
-      if (d.predicted_class !== "healthy") problems += 1;
+      if (!isHealthyClass(d.predicted_class)) problems += 1;
     });
     const total = dets.length;
-    const healthy = class_counts.healthy || 0;
+    const healthy = countHealthyInCounts(class_counts);
     return {
       farm_id: fid,
       total_detections: total,
@@ -1970,18 +2029,17 @@ function AdminTrendsChart({ trends }) {
   return (
     <div className="admin-trends-chart">
       {trends.map((day) => {
-        const h = (day.healthy / maxTotal) * 100;
-        const di = (day.diseased / maxTotal) * 100;
-        const p = (day.pest_affected / maxTotal) * 100;
-        const w = (day.water_stressed / maxTotal) * 100;
+        const tc = dayTrendCounts(day);
+        const h = (tc.healthy / maxTotal) * 100;
+        const b = (tc.bacterial / maxTotal) * 100;
+        const s = (tc.septoria / maxTotal) * 100;
         const label = new Date(day.date).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
         return (
           <div className="trend-day" key={day.date}>
             <div className="trend-bar-stack" title={`${day.total} detections`}>
-              {day.water_stressed > 0 && <div className="trend-seg seg-water" style={{ height: `${w}%` }} />}
-              {day.pest_affected > 0 && <div className="trend-seg seg-pest" style={{ height: `${p}%` }} />}
-              {day.diseased > 0 && <div className="trend-seg seg-diseased" style={{ height: `${di}%` }} />}
-              {day.healthy > 0 && <div className="trend-seg seg-healthy" style={{ height: `${h}%` }} />}
+              {tc.septoria > 0 && <div className="trend-seg seg-septoria" style={{ height: `${s}%` }} />}
+              {tc.bacterial > 0 && <div className="trend-seg seg-bacterial" style={{ height: `${b}%` }} />}
+              {tc.healthy > 0 && <div className="trend-seg seg-healthy" style={{ height: `${h}%` }} />}
               {day.total === 0 && <div className="trend-seg seg-empty" style={{ height: "4%" }} />}
             </div>
             <div className="trend-day-label">{label}</div>
@@ -1991,9 +2049,8 @@ function AdminTrendsChart({ trends }) {
       })}
       <div className="trend-legend">
         <span><i className="leg leg-healthy" /> Healthy</span>
-        <span><i className="leg leg-diseased" /> Diseased</span>
-        <span><i className="leg leg-pest" /> Pest</span>
-        <span><i className="leg leg-water" /> Water</span>
+        <span><i className="leg leg-bacterial" /> Bacterial</span>
+        <span><i className="leg leg-septoria" /> Septoria</span>
       </div>
     </div>
   );
@@ -2075,10 +2132,9 @@ function ScanSessionDetailModal({ sessionId, onClose }) {
               <div><span className="insight-label">Issues</span><strong className="text-warn">{detail.issues_found}</strong></div>
             </div>
             <div className="admin-session-counts">
-              <span className="count-pill pill-healthy">Healthy {detail.healthy_count}</span>
-              <span className="count-pill pill-diseased">Diseased {detail.diseased_count}</span>
-              <span className="count-pill pill-pest">Pest {detail.pest_count}</span>
-              <span className="count-pill pill-water">Water {detail.water_stressed_count}</span>
+              <span className="count-pill pill-healthy">Healthy {detail.healthy_count ?? 0}</span>
+              <span className="count-pill pill-bacterial">Bacterial {(detail.bacterial_count ?? 0) + (detail.diseased_count ?? 0) + (detail.pest_count ?? 0)}</span>
+              <span className="count-pill pill-septoria">Septoria {(detail.septoria_count ?? 0) + (detail.water_stressed_count ?? 0)}</span>
             </div>
             <h4 className="admin-session-flagged-title">Flagged plants ({detail.flagged_detections?.length || 0})</h4>
             {detail.flagged_detections?.length === 0 ? (
@@ -2360,7 +2416,7 @@ function AdminPage({ onNavigateToFarm }) {
           <div className="admin-stat-icon">⚠️</div>
           <div className="admin-stat-label">Most Common Problem</div>
           <div className="admin-stat-value admin-stat-text">
-            {stats?.most_common_problem ? formatClassLabel(stats.most_common_problem) : "—"}
+            {stats?.most_common_problem ? formatClassLabel(normalizeClassKey(stats.most_common_problem)) : "—"}
           </div>
         </div>
         <div className="admin-stat-card accent-green">
@@ -2380,8 +2436,8 @@ function AdminPage({ onNavigateToFarm }) {
               <strong>{stats?.most_active_farm || "—"}</strong>
             </div>
             <div>
-              <span className="insight-label">Most Common Disease Today</span>
-              <strong>{stats?.most_common_disease_today ? formatClassLabel(stats.most_common_disease_today) : "—"}</strong>
+              <span className="insight-label">Most Common Problem Today</span>
+              <strong>{stats?.most_common_disease_today ? formatClassLabel(normalizeClassKey(stats.most_common_disease_today)) : "—"}</strong>
             </div>
           </div>
         </div>
@@ -2674,10 +2730,9 @@ function monthDateRange() {
 }
 
 const REPORT_CLASSES = [
-  { key: "healthy", label: "Healthy", color: "var(--secondary)", card: "breakdown-healthy" },
-  { key: "diseased", label: "Diseased", color: "var(--danger)", card: "breakdown-diseased" },
-  { key: "pest_affected", label: "Pest", color: "var(--warning)", card: "breakdown-pest" },
-  { key: "water_stressed", label: "Water Stressed", color: "var(--water)", card: "breakdown-water" },
+  { aggKey: "Healthy", label: "Healthy", color: "var(--secondary)", card: "breakdown-healthy" },
+  { aggKey: "Bacterial", label: "Bacterial", color: "var(--danger)", card: "breakdown-bacterial" },
+  { aggKey: "Septoria", label: "Septoria", color: "var(--warning)", card: "breakdown-septoria" },
 ];
 
 function buildReportHtml(report) {
@@ -2691,8 +2746,9 @@ function buildReportHtml(report) {
     </tr>`).join("");
 
   const breakdown = REPORT_CLASSES.map((c) => {
-    const count = s.class_counts[c.key] || 0;
-    const pct = s.class_percentages[c.key] || 0;
+    const agg = aggregateClassCounts(s.class_counts);
+    const count = agg[c.aggKey] || 0;
+    const pct = s.total_detections ? Math.round((count / s.total_detections) * 100) : 0;
     return `<li><strong>${c.label}:</strong> ${count} (${pct}%)</li>`;
   }).join("");
 
@@ -2758,13 +2814,14 @@ function downloadReportHtml(report) {
 
 function ReportBreakdownChart({ summary }) {
   const total = summary?.total_detections || 0;
+  const agg = aggregateClassCounts(summary?.class_counts);
   return (
     <div className="report-bar-chart">
       {REPORT_CLASSES.map((c) => {
-        const pct = summary?.class_percentages?.[c.key] || 0;
-        const count = summary?.class_counts?.[c.key] || 0;
+        const count = agg[c.aggKey] || 0;
+        const pct = total ? Math.round((count / total) * 100) : 0;
         return (
-          <div className="report-bar-row" key={c.key}>
+          <div className="report-bar-row" key={c.aggKey}>
             <div className="report-bar-label">{c.label}</div>
             <div className="report-bar-track">
               <div className="report-bar-fill" style={{ width: `${Math.max(pct, count ? 6 : 0)}%`, background: c.color }}>
@@ -2806,10 +2863,11 @@ function ReportPreview({ report, onDownload }) {
 
       <div className="report-breakdown-grid">
         {REPORT_CLASSES.map((c) => {
-          const count = s.class_counts[c.key] || 0;
-          const pct = s.class_percentages[c.key] || 0;
+          const agg = aggregateClassCounts(s.class_counts);
+          const count = agg[c.aggKey] || 0;
+          const pct = s.total_detections ? Math.round((count / s.total_detections) * 100) : 0;
           return (
-            <div className={`report-breakdown-card ${c.card}`} key={c.key}>
+            <div className={`report-breakdown-card ${c.card}`} key={c.aggKey}>
               <div className="rb-label">{c.label}</div>
               <div className="rb-count">{count}</div>
               <div className="rb-pct">{pct}% of scans</div>
@@ -2965,28 +3023,33 @@ function ReportsPage({ farms, farmId, onFarmChange }) {
 
 // ── Live Scan page ────────────────────────────────────────────────────────────
 const LIVE_SCAN_INTERVAL_MS = 2500;
-const LIVE_SCAN_ISSUE_CLASSES = new Set(["diseased", "pest_affected", "water_stressed"]);
+const LIVE_SCAN_ISSUE_CLASSES = new Set([
+  "Bacterial", "Septoria", "bacterial", "septoria",
+  "diseased", "pest_affected", "water_stressed",
+]);
 
 function liveScanBorderClass(predClass, actualClass) {
   const c = actualClass || predClass;
   if (!predClass || predClass === "unavailable" || predClass === "uncertain") return "live-border-gray";
-  if (c === "healthy") return "live-border-green";
-  if (c === "diseased" || c === "pest_affected") return "live-border-red";
-  if (c === "water_stressed") return "live-border-orange";
+  const norm = normalizeClassKey(c);
+  if (norm === "Healthy") return "live-border-green";
+  if (norm === "Bacterial") return "live-border-red";
+  if (norm === "Septoria") return "live-border-orange";
   return "live-border-gray";
 }
 
 function liveScanDisplayLabel(predClass, actualClass) {
   const c = actualClass || predClass;
   if (predClass === "unavailable") return "AI UNAVAILABLE";
-  if (predClass === "uncertain") return `UNCERTAIN — ${(c || "unknown").replace(/_/g, " ").toUpperCase()}`;
-  return (c || "unknown").replace(/_/g, " ").toUpperCase();
+  if (predClass === "uncertain") return `UNCERTAIN — ${normalizeClassKey(c).replace(/_/g, " ").toUpperCase()}`;
+  return normalizeClassKey(c).replace(/_/g, " ").toUpperCase();
 }
 
 function isLiveScanIssue(predClass, actualClass) {
   if (predClass === "uncertain" || predClass === "unavailable") return false;
   const c = actualClass || predClass;
-  return LIVE_SCAN_ISSUE_CLASSES.has(c);
+  if (LIVE_SCAN_ISSUE_CLASSES.has(c)) return true;
+  return isProblemClass(c);
 }
 
 function captureVideoFrameBlob(videoEl, canvasEl) {
@@ -3037,14 +3100,13 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
   const issuesFound = sessionDetections.filter((d) => d.isIssue).length;
 
   const breakdown = sessionDetections.reduce((acc, d) => {
-    const c = d.actualClass || d.className;
-    if (c === "healthy") acc.healthy += 1;
-    else if (c === "diseased") acc.diseased += 1;
-    else if (c === "pest_affected") acc.pest += 1;
-    else if (c === "water_stressed") acc.water += 1;
+    const norm = normalizeClassKey(d.actualClass || d.className);
+    if (norm === "Healthy") acc.healthy += 1;
+    else if (norm === "Bacterial") acc.bacterial += 1;
+    else if (norm === "Septoria") acc.septoria += 1;
     else acc.other += 1;
     return acc;
-  }, { healthy: 0, diseased: 0, pest: 0, water: 0, other: 0 });
+  }, { healthy: 0, bacterial: 0, septoria: 0, other: 0 });
 
   const flaggedPlants = sessionDetections.filter((d) => d.isIssue);
 
@@ -3255,9 +3317,8 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
           </div>
           <div className="live-summary-breakdown">
             <div className="live-breakdown-item healthy">Healthy: {breakdown.healthy}</div>
-            <div className="live-breakdown-item diseased">Diseased: {breakdown.diseased}</div>
-            <div className="live-breakdown-item pest">Pest: {breakdown.pest}</div>
-            <div className="live-breakdown-item water">Water stressed: {breakdown.water}</div>
+            <div className="live-breakdown-item bacterial">Bacterial: {breakdown.bacterial}</div>
+            <div className="live-breakdown-item septoria">Septoria: {breakdown.septoria}</div>
           </div>
         </div>
 
@@ -3410,11 +3471,11 @@ function DashboardApp({ user, onLogout }) {
             let problems = 0;
             dets.forEach((d) => {
               class_counts[d.predicted_class] = (class_counts[d.predicted_class] || 0) + 1;
-              if (d.predicted_class !== "healthy") problems += 1;
+              if (!isHealthyClass(d.predicted_class)) problems += 1;
             });
             const total = dets.length;
             statsMap[f.id] = {
-              health_score: total ? Math.round(((class_counts.healthy || 0) / total) * 100) : 100,
+              health_score: total ? Math.round((countHealthyInCounts(class_counts) / total) * 100) : 100,
               last_scan: dets[0]?.timestamp || null,
               problems_found: problems,
               total_detections: total,
@@ -3499,7 +3560,7 @@ function DashboardApp({ user, onLogout }) {
   const unreadAlerts = unreadCount;
   const counts = summary?.class_counts || stats?.class_counts || {};
   const totalDet = Object.values(counts).reduce((a, b) => a + b, 0) || 0;
-  const healthScore = totalDet ? Math.round(((counts.healthy || 0) / totalDet) * 100) : 100;
+  const healthScore = totalDet ? Math.round((countHealthyInCounts(counts) / totalDet) * 100) : 100;
 
   const initials = (user?.name || "U").split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
   const isAdmin = user?.role === "admin";

@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from ai_engine import ModelLoadError, predict_image_bytes
 from auth import get_current_user, get_farm_for_user, require_roles
+from class_constants import is_healthy, is_problem, normalize_class
 from database import get_db
 from models import Alert, Detection, Farm, ScanSession, User
 from schemas import (
@@ -35,7 +36,6 @@ UPLOADS_DIR = STORAGE_DIR / "uploads"
 FLAGGED_DIR = STORAGE_DIR / "flagged"
 SCAN_FLAGS_DIR = STORAGE_DIR / "scan_flags"
 ALERT_THRESHOLD = 70.0
-PROBLEM_CLASSES = {"diseased", "pest_affected", "water_stressed"}
 SKIP_CLASSES = {"uncertain", "unavailable"}
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 
@@ -73,19 +73,18 @@ def _decode_image_base64(data: str) -> bytes:
 
 
 def _normalize_class(cls: str) -> str:
-    return cls.replace("pest", "pest_affected") if cls == "pest" else cls
+    return normalize_class(cls)
 
 
 def _increment_session_counts(session: ScanSession, cls: str) -> None:
     session.total_scanned += 1
-    if cls == "healthy":
+    canonical = normalize_class(cls)
+    if canonical == "Healthy":
         session.healthy_count += 1
-    elif cls == "diseased":
-        session.diseased_count += 1
-    elif cls in ("pest_affected", "pest"):
-        session.pest_count += 1
-    elif cls == "water_stressed":
-        session.water_stressed_count += 1
+    elif canonical == "Bacterial":
+        session.bacterial_count += 1
+    elif canonical == "Septoria":
+        session.septoria_count += 1
 
 
 def _get_session_for_user(db: Session, session_id: int, user: User) -> ScanSession:
@@ -112,6 +111,8 @@ def _session_to_summary(db: Session, session: ScanSession) -> ScanSessionSummary
         status=session.status,
         total_scanned=session.total_scanned,
         healthy_count=session.healthy_count,
+        bacterial_count=session.bacterial_count,
+        septoria_count=session.septoria_count,
         diseased_count=session.diseased_count,
         pest_count=session.pest_count,
         water_stressed_count=session.water_stressed_count,
@@ -149,11 +150,12 @@ def _save_flagged_detection(
     db.add(detection)
     db.flush()
 
-    if predicted_class in PROBLEM_CLASSES and confidence > ALERT_THRESHOLD:
+    canonical = normalize_class(predicted_class)
+    if is_problem(canonical) and confidence > ALERT_THRESHOLD:
         alert = Alert(
             farm_id=farm.id,
             detection_id=detection.id,
-            class_name=predicted_class,
+            class_name=canonical,
             confidence=confidence,
             flagged_image_path=str(flagged_path),
         )
@@ -184,7 +186,8 @@ def _save_detection_with_alert(
     db.flush()
 
     alert_created = False
-    if predicted_class in PROBLEM_CLASSES and confidence > ALERT_THRESHOLD:
+    canonical = normalize_class(predicted_class)
+    if is_problem(canonical) and confidence > ALERT_THRESHOLD:
         flagged_path = FLAGGED_DIR / f"SCAN_ALERT_{predicted_class}_{stamp}.jpg"
         try:
             flagged_path.write_bytes(image_bytes)
@@ -193,7 +196,7 @@ def _save_detection_with_alert(
         alert = Alert(
             farm_id=farm.id,
             detection_id=detection.id,
-            class_name=predicted_class,
+            class_name=canonical,
             confidence=confidence,
             flagged_image_path=str(flagged_path),
         )
@@ -214,12 +217,14 @@ async def analyze_frame(
 
     pred_class = prediction.get("class", "unavailable")
     confidence = float(prediction.get("confidence", 0))
-    is_problem = bool(prediction.get("is_problem", False)) and pred_class not in SKIP_CLASSES
+    problem_detected = (
+        bool(prediction.get("is_problem", False)) or is_problem(pred_class)
+    ) and pred_class not in SKIP_CLASSES
 
     return ScanFrameAnalyzeOut(
         predicted_class=pred_class,
         confidence=confidence,
-        is_problem=is_problem,
+        is_problem=problem_detected,
     )
 
 
@@ -284,7 +289,7 @@ def bulk_save_session_detections(
 
         _increment_session_counts(session, cls)
 
-        if cls == "healthy" or item.confidence <= ALERT_THRESHOLD:
+        if is_healthy(cls) or item.confidence <= ALERT_THRESHOLD:
             continue
         if not item.image_base64:
             continue
@@ -342,7 +347,7 @@ def submit_session(
     saved = 0
     alerts_created = 0
     for item in payload.detections:
-        save_class = item.actual_class or item.predicted_class
+        save_class = normalize_class(item.actual_class or item.predicted_class)
         if save_class in SKIP_CLASSES:
             continue
         if not item.image_base64:

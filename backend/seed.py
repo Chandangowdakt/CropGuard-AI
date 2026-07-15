@@ -130,16 +130,16 @@ def seed():
 
         # ── Sample detections ─────────────────────────────────────────────────
         samples = [
-            ("healthy", 94.2),
-            ("healthy", 91.5),
-            ("healthy", 88.3),
-            ("diseased", 96.1),
-            ("diseased", 89.4),
-            ("pest_affected", 92.7),
-            ("pest_affected", 85.6),
-            ("water_stressed", 87.9),
-            ("water_stressed", 90.2),
-            ("healthy", 93.8),
+            ("Healthy", 94.2),
+            ("Healthy", 91.5),
+            ("Bacterial", 96.1),
+            ("Bacterial", 89.4),
+            ("Septoria", 92.7),
+            ("Septoria", 85.6),
+            ("Healthy", 88.3),
+            ("Bacterial", 87.9),
+            ("Septoria", 90.2),
+            ("Healthy", 93.8),
         ]
 
         existing_count = db.query(Detection).count()

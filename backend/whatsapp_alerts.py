@@ -48,9 +48,8 @@ COOLDOWN_MINUTES = 30
 WHATSAPP_CONFIDENCE_THRESHOLD = 80.0
 
 _CLASS_ACTIONS = {
-    "diseased": "Apply fungicide within 48 hours",
-    "pest_affected": "Apply pesticide and check surrounding plants",
-    "water_stressed": "Water this plant immediately and check irrigation",
+    "Bacterial": "Apply copper-based bactericide. Remove affected leaves. Avoid overhead watering.",
+    "Septoria": "Apply fungicide. Improve air circulation. Remove and destroy affected leaves.",
 }
 
 # (farm_name, class_name) → last send time (UTC)

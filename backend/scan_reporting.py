@@ -43,7 +43,13 @@ def _admin_emails(db: Session) -> list[str]:
 
 
 def _problem_count(session: ScanSession) -> int:
-    return session.diseased_count + session.pest_count + session.water_stressed_count
+    return (
+        getattr(session, "bacterial_count", 0)
+        + getattr(session, "septoria_count", 0)
+        + session.diseased_count
+        + session.pest_count
+        + session.water_stressed_count
+    )
 
 
 def _problem_rate(session: ScanSession) -> float:
@@ -84,6 +90,8 @@ def _build_summary_image(
     session: ScanSession,
     flagged_count: int,
 ) -> bytes:
+    bacterial = getattr(session, "bacterial_count", 0)
+    septoria = getattr(session, "septoria_count", 0)
     lines = [
         "CropGuard AI — Scan Report",
         f"Farm: {farm_name}",
@@ -91,9 +99,8 @@ def _build_summary_image(
         f"Completed: {_format_scan_datetime(session.completed_at)}",
         f"Plants scanned: {session.total_scanned}",
         f"Healthy: {session.healthy_count} ({_pct(session.healthy_count, session.total_scanned)}%)",
-        f"Diseased: {session.diseased_count} ({_pct(session.diseased_count, session.total_scanned)}%)",
-        f"Pest: {session.pest_count} ({_pct(session.pest_count, session.total_scanned)}%)",
-        f"Water stressed: {session.water_stressed_count} ({_pct(session.water_stressed_count, session.total_scanned)}%)",
+        f"Bacterial: {bacterial} ({_pct(bacterial, session.total_scanned)}%)",
+        f"Septoria: {septoria} ({_pct(septoria, session.total_scanned)}%)",
         f"Flagged plants: {flagged_count}",
     ]
     width, height = 640, 40 + len(lines) * 28
@@ -138,15 +145,16 @@ def build_scan_session_email(
         f"{completed.strftime('%Y-%m-%d')}"
     )
 
+    bacterial = getattr(session, "bacterial_count", 0)
+    septoria = getattr(session, "septoria_count", 0)
     body = (
         f"Farm: {farm_name}\n"
         f"Manager: {manager_name}\n"
         f"Scan completed: {_format_scan_datetime(completed)}\n"
         f"Plants scanned: {total}\n"
         f"Healthy: {session.healthy_count} ({_pct(session.healthy_count, total)}%)\n"
-        f"Diseased: {session.diseased_count} ({_pct(session.diseased_count, total)}%)\n"
-        f"Pest affected: {session.pest_count} ({_pct(session.pest_count, total)}%)\n"
-        f"Water stressed: {session.water_stressed_count} ({_pct(session.water_stressed_count, total)}%)\n"
+        f"Bacterial: {bacterial} ({_pct(bacterial, total)}%)\n"
+        f"Septoria: {septoria} ({_pct(septoria, total)}%)\n"
         f"Flagged plants requiring attention: {flagged_count}\n"
         f"\nView full report in dashboard:\n{_dashboard_link(session.id)}\n"
     )

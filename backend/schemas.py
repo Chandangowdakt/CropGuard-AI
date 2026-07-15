@@ -215,9 +215,11 @@ class ScanSessionSummaryOut(BaseModel):
     status: str
     total_scanned: int
     healthy_count: int
-    diseased_count: int
-    pest_count: int
-    water_stressed_count: int
+    bacterial_count: int = 0
+    septoria_count: int = 0
+    diseased_count: int = 0
+    pest_count: int = 0
+    water_stressed_count: int = 0
     flagged_count: int
     started_at: datetime
     completed_at: datetime | None = None
@@ -324,9 +326,11 @@ class StatsOut(BaseModel):
 class DailyTrendOut(BaseModel):
     date: str
     healthy: int
-    diseased: int
-    pest_affected: int
-    water_stressed: int
+    bacterial: int
+    septoria: int
+    diseased: int = 0
+    pest_affected: int = 0
+    water_stressed: int = 0
     total: int
 
 
@@ -402,9 +406,11 @@ class AdminFlaggedDetectionOut(BaseModel):
 
 class AdminScanSessionDetailOut(AdminScanSessionOut):
     healthy_count: int
-    diseased_count: int
-    pest_count: int
-    water_stressed_count: int
+    bacterial_count: int = 0
+    septoria_count: int = 0
+    diseased_count: int = 0
+    pest_count: int = 0
+    water_stressed_count: int = 0
     flagged_detections: list[AdminFlaggedDetectionOut]
 
 

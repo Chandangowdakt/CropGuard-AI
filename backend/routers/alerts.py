@@ -42,16 +42,25 @@ router = APIRouter(prefix="/api/alerts", tags=["alerts"])
 
 FILTER_CLASS_MAP = {
 
-    "diseased": "diseased",
+    "bacterial": "Bacterial",
 
-    "pest": "pest_affected",
+    "septoria": "Septoria",
 
-    "pest_affected": "pest_affected",
+    "healthy": "Healthy",
 
-    "water": "water_stressed",
+    "diseased": "Bacterial",
 
-    "water_stressed": "water_stressed",
+    "pest": "Bacterial",
 
+    "water": "Septoria",
+
+}
+
+# DB class_name values that match each canonical filter (includes legacy labels)
+_FILTER_DB_CLASSES = {
+    "Bacterial": {"Bacterial", "diseased", "pest_affected", "pest"},
+    "Septoria": {"Septoria", "water_stressed", "water"},
+    "Healthy": {"Healthy", "healthy"},
 }
 
 
@@ -258,7 +267,7 @@ def farm_alerts(
 
 def list_alerts(
 
-    filter: str = Query("all", description="all | unread | diseased | pest | water_stressed"),
+    filter: str = Query("all", description="all | unread | bacterial | septoria | healthy | diseased | pest | water"),
 
     db: Session = Depends(get_db),
 
@@ -284,7 +293,11 @@ def list_alerts(
 
     elif normalized in FILTER_CLASS_MAP:
 
-        query = query.filter(Alert.class_name == FILTER_CLASS_MAP[normalized])
+        canonical = FILTER_CLASS_MAP[normalized]
+
+        db_classes = _FILTER_DB_CLASSES.get(canonical, {canonical})
+
+        query = query.filter(Alert.class_name.in_(db_classes))
 
 
 
@@ -389,5 +402,4 @@ def get_alert_image(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image file not found")
 
     return FileResponse(path)
-
 

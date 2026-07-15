@@ -14,6 +14,12 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from ai_engine import ModelLoadError, get_model_status, predict_image_bytes
+from class_constants import (
+    empty_class_counts,
+    is_healthy,
+    is_problem,
+    normalize_class,
+)
 from leaf_engine import predict_leaf_bytes
 from whatsapp_alerts import WHATSAPP_CONFIDENCE_THRESHOLD, send_whatsapp_alert
 from auth import get_accessible_farm_ids, get_current_user, get_farm_for_user
@@ -38,7 +44,6 @@ STORAGE_DIR = Path(__file__).resolve().parent.parent / "storage"
 UPLOADS_DIR = STORAGE_DIR / "uploads"
 FLAGGED_DIR = STORAGE_DIR / "flagged"
 ALERT_THRESHOLD = 70.0
-PROBLEM_CLASSES = {"diseased", "pest_affected", "water_stressed"}
 
 
 def _ensure_dirs():
@@ -89,7 +94,7 @@ def _persist_detection(
     ext: str,
     prediction: dict,
 ) -> DetectionResult:
-    predicted_class = prediction["class"]
+    predicted_class = normalize_class(prediction["class"])
     confidence = prediction["confidence"]
     stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
     save_path = UPLOADS_DIR / f"farm{farm.id}_{stamp}{ext}"
@@ -109,10 +114,7 @@ def _persist_detection(
     alert_created = False
     message = f"Detected {predicted_class} ({confidence:.1f}%)"
 
-    should_alert = (
-        predicted_class in PROBLEM_CLASSES
-        and confidence > ALERT_THRESHOLD
-    )
+    should_alert = is_problem(predicted_class) and confidence > ALERT_THRESHOLD
     if should_alert:
         flagged_path = FLAGGED_DIR / f"ALERT_{predicted_class}_{stamp}.jpg"
         try:
@@ -132,10 +134,7 @@ def _persist_detection(
         alert_created = True
         message = f"ALERT: {predicted_class} detected at {confidence:.1f}% confidence"
 
-    if (
-        predicted_class != "healthy"
-        and confidence > WHATSAPP_CONFIDENCE_THRESHOLD
-    ):
+    if not is_healthy(predicted_class) and confidence > WHATSAPP_CONFIDENCE_THRESHOLD:
         send_whatsapp_alert(
             farm.name,
             predicted_class,
@@ -200,10 +199,11 @@ async def save_detection(
     _ensure_dirs()
     farm = get_farm_for_user(db, farm_id, user)
     image_bytes, ext = await _read_image_upload(file)
+    canonical = normalize_class(predicted_class)
     prediction = {
-        "class": predicted_class,
+        "class": canonical,
         "confidence": confidence,
-        "is_problem": predicted_class in PROBLEM_CLASSES,
+        "is_problem": is_problem(canonical),
     }
     return _persist_detection(db, farm, image_bytes, ext, prediction)
 
@@ -215,34 +215,27 @@ def _build_recommendations(class_counts: dict[str, int], total: int) -> str:
             "We recommend scheduling regular photo scans every 3–4 days to establish a health baseline."
         )
     parts: list[str] = []
-    diseased = class_counts.get("diseased", 0)
-    pest = class_counts.get("pest_affected", 0)
-    water = class_counts.get("water_stressed", 0)
-    healthy = class_counts.get("healthy", 0)
+    bacterial = class_counts.get("Bacterial", 0)
+    septoria = class_counts.get("Septoria", 0)
+    healthy = class_counts.get("Healthy", 0)
     healthy_pct = round((healthy / total) * 100)
 
-    if diseased:
+    if bacterial:
         parts.append(
-            f"Your farm detected {diseased} case{'s' if diseased != 1 else ''} of disease this period. "
-            "We recommend applying fungicide within 48 hours for affected plants, removing severely infected foliage, "
-            "and consulting your agronomist for a treatment plan."
+            f"Your farm detected {bacterial} case{'s' if bacterial != 1 else ''} of bacterial infection this period. "
+            "Apply copper-based bactericide within 48 hours, remove affected leaves, "
+            "and avoid overhead watering to limit spread."
         )
-    if pest:
+    if septoria:
         parts.append(
-            f"Pest damage was identified in {pest} scan{'s' if pest != 1 else ''}. "
-            "We recommend targeted pesticide application, inspecting neighbouring plants, "
-            "and installing yellow sticky traps for early pest monitoring."
-        )
-    if water:
-        parts.append(
-            f"Water stress appeared in {water} detection{'s' if water != 1 else ''}. "
-            "We recommend immediate irrigation, checking drip lines for blockages, "
-            "and scheduling watering during early morning hours."
+            f"Septoria leaf spot was identified in {septoria} scan{'s' if septoria != 1 else ''}. "
+            "Apply fungicide promptly, improve air circulation between plants, "
+            "and remove and destroy affected leaves."
         )
     if not parts:
         parts.append(
             f"Your farm maintained {healthy_pct}% healthy detections this period. "
-            "Continue weekly monitoring and maintain current irrigation and fertilisation schedules."
+            "Continue regular monitoring and maintain current irrigation and fertilisation schedules."
         )
     return " ".join(parts)
 
@@ -277,12 +270,14 @@ def farm_health_report(
     alerts = db.query(Alert).filter(Alert.farm_id == farm_id).all()
     alert_by_detection = {a.detection_id: a for a in alerts if a.detection_id}
 
-    class_counts: dict[str, int] = {}
+    class_counts = empty_class_counts()
     for d in detections:
-        class_counts[d.predicted_class] = class_counts.get(d.predicted_class, 0) + 1
+        canonical = normalize_class(d.predicted_class)
+        if canonical in class_counts:
+            class_counts[canonical] += 1
 
     total = len(detections)
-    healthy = class_counts.get("healthy", 0)
+    healthy = class_counts.get("Healthy", 0)
     health_score = round((healthy / total) * 100, 1) if total else 100.0
 
     class_percentages: dict[str, float] = {}
@@ -291,7 +286,7 @@ def farm_health_report(
 
     report_detections: list[ReportDetectionOut] = []
     for d in detections:
-        if d.predicted_class == "healthy":
+        if is_healthy(d.predicted_class):
             det_status = "Resolved"
         else:
             alert = alert_by_detection.get(d.id)
@@ -388,9 +383,11 @@ def farm_detection_summary(
     """Detection counts per class for one farm."""
     get_farm_for_user(db, farm_id, user)
     detections = db.query(Detection).filter(Detection.farm_id == farm_id).all()
-    class_counts: dict[str, int] = {}
+    class_counts = empty_class_counts()
     for d in detections:
-        class_counts[d.predicted_class] = class_counts.get(d.predicted_class, 0) + 1
+        canonical = normalize_class(d.predicted_class)
+        if canonical in class_counts:
+            class_counts[canonical] += 1
     return FarmSummaryOut(
         farm_id=farm_id,
         total_detections=len(detections),
@@ -413,9 +410,11 @@ def get_stats(
         db.query(Alert).filter(Alert.farm_id.in_(farm_ids)).all()
         if farm_ids else []
     )
-    class_counts: dict[str, int] = {}
+    class_counts = empty_class_counts()
     for d in detections:
-        class_counts[d.predicted_class] = class_counts.get(d.predicted_class, 0) + 1
+        canonical = normalize_class(d.predicted_class)
+        if canonical in class_counts:
+            class_counts[canonical] += 1
     return StatsOut(
         total_farms=len(farm_ids),
         total_detections=len(detections),
