@@ -1191,6 +1191,7 @@ function AnalysisPage({ farms, farmId, onFarmChange, onAnalyzed }) {
   const { pushToast } = useToast();
   const [file, setFile] = useState(null);
   const [batchFiles, setBatchFiles] = useState([]);
+  const [batchPreviewItems, setBatchPreviewItems] = useState([]);
   const [batchResult, setBatchResult] = useState(null);
   const [batchLoading, setBatchLoading] = useState(false);
   const [batchError, setBatchError] = useState("");
@@ -1271,13 +1272,18 @@ function AnalysisPage({ farms, farmId, onFarmChange, onAnalyzed }) {
       }
     }
     setBatchFiles(files);
+    setBatchPreviewItems(files.map((f, i) => ({ id: `${f.name}_${i}`, name: f.name, url: URL.createObjectURL(f) })));
     setBatchResult(null);
     setBatchError("");
     setBatchSaveMessage("");
   }
 
   function resetBatch() {
+    batchPreviewItems.forEach((item) => {
+      try { URL.revokeObjectURL(item.url); } catch {}
+    });
     setBatchFiles([]);
+    setBatchPreviewItems([]);
     setBatchResult(null);
     setBatchError("");
     setBatchSaveMessage("");
@@ -1592,6 +1598,22 @@ function AnalysisPage({ farms, farmId, onFarmChange, onAnalyzed }) {
             Selected <strong>{batchFiles.length}</strong> images
           </p>
         )}
+        {batchPreviewItems.length > 0 && (
+          <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(90px, 1fr))", gap: 8 }}>
+            {batchPreviewItems.map((item) => (
+              <div key={item.id} style={{ textAlign: "center" }}>
+                <img
+                  src={item.url}
+                  alt={item.name}
+                  style={{ width: "100%", height: 70, objectFit: "cover", borderRadius: 6, border: "1px solid var(--border)" }}
+                />
+                <div style={{ marginTop: 4, fontSize: "0.72rem", color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {item.name}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
         <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
           <button className="btn btn-primary" onClick={analyseBatch} disabled={batchLoading || !batchFiles.length}>
             {batchLoading ? "Analysing Batch…" : "Analyse Batch"}
@@ -1626,8 +1648,20 @@ function AnalysisPage({ farms, farmId, onFarmChange, onAnalyzed }) {
               ))}
             </div>
             <p style={{ marginTop: 10, color: "var(--muted)" }}>
-              Total analyzed: <strong>{batchResult.total_images}</strong>
+              Total files: <strong>{batchResult.total_images}</strong> · Success: <strong>{batchResult.success_count}</strong> · Failed: <strong>{batchResult.failed_count}</strong>
             </p>
+            {(batchResult.errors || []).length > 0 && (
+              <div style={{ marginTop: 8, padding: 10, border: "1px solid #fca5a5", borderRadius: 8, background: "#fff5f5" }}>
+                <strong style={{ color: "#b91c1c" }}>Some files could not be processed:</strong>
+                <ul style={{ margin: "8px 0 0 18px" }}>
+                  {batchResult.errors.map((e, idx) => (
+                    <li key={`${e.filename}_${idx}`} style={{ color: "#7f1d1d", fontSize: "0.9rem" }}>
+                      {e.filename}: {e.error}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             <div style={{ marginTop: 8, maxHeight: 260, overflow: "auto", border: "1px solid var(--border)", borderRadius: 8 }}>
               <table className="table" style={{ marginBottom: 0 }}>
                 <thead>

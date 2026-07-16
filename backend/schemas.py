@@ -131,21 +131,32 @@ class BatchImagePredictionOut(BaseModel):
     prediction: PredictionOut
 
 
+class BatchImageErrorOut(BaseModel):
+    filename: str
+    error: str
+
+
 class BatchAnalysisOut(BaseModel):
     total_images: int
+    success_count: int
+    failed_count: int
     class_counts: dict[str, int]
     class_percentages: dict[str, float]
     results: list[BatchImagePredictionOut]
+    errors: list[BatchImageErrorOut] = []
     message: str
     analyzed_at: datetime
 
 
 class BatchSaveOut(BaseModel):
     farm_id: int
+    total_images: int
     saved_count: int
+    failed_count: int
     alert_count: int
     class_counts: dict[str, int]
     class_percentages: dict[str, float]
+    errors: list[BatchImageErrorOut] = []
     message: str
     saved_at: datetime
 

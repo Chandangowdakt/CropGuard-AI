@@ -28,6 +28,7 @@ from models import Alert, Detection, Farm, User
 from schemas import (
     AnalysisPreviewOut,
     BatchAnalysisOut,
+    BatchImageErrorOut,
     BatchImagePredictionOut,
     BatchSaveOut,
     DetectionOut,
@@ -188,44 +189,56 @@ async def analyze_images_batch(
         raise HTTPException(status_code=400, detail="No images uploaded")
 
     results: list[BatchImagePredictionOut] = []
+    errors: list[BatchImageErrorOut] = []
     class_counts = empty_class_counts()
 
     for file in files:
-        image_bytes, _ext = await _read_image_upload(file)
-        prediction = _run_prediction(image_bytes)
-        predicted_class = prediction["class"]
-        actual_class = normalize_class(prediction.get("actual_class", predicted_class))
-        confidence = prediction.get("confidence", 0.0)
+        filename = file.filename or "image"
+        try:
+            image_bytes, _ext = await _read_image_upload(file)
+            prediction = _run_prediction(image_bytes)
+            predicted_class = prediction["class"]
+            actual_class = normalize_class(prediction.get("actual_class", predicted_class))
+            confidence = prediction.get("confidence", 0.0)
 
-        prediction_payload = {
-            "class": predicted_class,
-            "actual_class": actual_class,
-            "confidence": confidence,
-            "is_problem": is_problem(actual_class),
-            "message": prediction.get("message"),
-        }
-        results.append(
-            BatchImagePredictionOut(
-                filename=file.filename or "image",
-                prediction=PredictionOut(**prediction_payload),
+            prediction_payload = {
+                "class": predicted_class,
+                "actual_class": actual_class,
+                "confidence": confidence,
+                "is_problem": is_problem(actual_class),
+                "message": prediction.get("message"),
+            }
+            results.append(
+                BatchImagePredictionOut(
+                    filename=filename,
+                    prediction=PredictionOut(**prediction_payload),
+                )
             )
-        )
 
-        if actual_class in class_counts:
-            class_counts[actual_class] += 1
+            if actual_class in class_counts:
+                class_counts[actual_class] += 1
+        except HTTPException as exc:
+            errors.append(BatchImageErrorOut(filename=filename, error=str(exc.detail)))
+        except Exception as exc:  # defensive: continue batch on unexpected file errors
+            errors.append(BatchImageErrorOut(filename=filename, error=str(exc)))
 
-    total = len(results)
+    total = len(files)
+    success_count = len(results)
+    failed_count = len(errors)
     class_percentages = {
-        cls: round((count / total) * 100, 1) if total else 0.0
+        cls: round((count / success_count) * 100, 1) if success_count else 0.0
         for cls, count in class_counts.items()
     }
 
     return BatchAnalysisOut(
         total_images=total,
+        success_count=success_count,
+        failed_count=failed_count,
         class_counts=class_counts,
         class_percentages=class_percentages,
         results=results,
-        message="Batch analysis complete",
+        errors=errors,
+        message="Batch analysis complete" if failed_count == 0 else "Batch analysis complete with some file errors",
         analyzed_at=datetime.utcnow(),
     )
 
@@ -244,28 +257,35 @@ async def save_images_batch(
 
     farm = get_farm_for_user(db, farm_id, user)
     class_counts = empty_class_counts()
+    errors: list[BatchImageErrorOut] = []
     saved_count = 0
     alert_count = 0
 
     for file in files:
-        image_bytes, ext = await _read_image_upload(file)
-        prediction = _run_prediction(image_bytes)
-        predicted_class = normalize_class(
-            prediction.get("actual_class", prediction.get("class"))
-        )
-        confidence = float(prediction.get("confidence", 0))
-        persist_prediction = {
-            "class": predicted_class,
-            "confidence": confidence,
-            "is_problem": is_problem(predicted_class),
-            "message": prediction.get("message"),
-        }
-        result = _persist_detection(db, farm, image_bytes, ext, persist_prediction)
-        saved_count += 1
-        if predicted_class in class_counts:
-            class_counts[predicted_class] += 1
-        if result.alert_created:
-            alert_count += 1
+        filename = file.filename or "image"
+        try:
+            image_bytes, ext = await _read_image_upload(file)
+            prediction = _run_prediction(image_bytes)
+            predicted_class = normalize_class(
+                prediction.get("actual_class", prediction.get("class"))
+            )
+            confidence = float(prediction.get("confidence", 0))
+            persist_prediction = {
+                "class": predicted_class,
+                "confidence": confidence,
+                "is_problem": is_problem(predicted_class),
+                "message": prediction.get("message"),
+            }
+            result = _persist_detection(db, farm, image_bytes, ext, persist_prediction)
+            saved_count += 1
+            if predicted_class in class_counts:
+                class_counts[predicted_class] += 1
+            if result.alert_created:
+                alert_count += 1
+        except HTTPException as exc:
+            errors.append(BatchImageErrorOut(filename=filename, error=str(exc.detail)))
+        except Exception as exc:  # defensive: continue batch on unexpected file errors
+            errors.append(BatchImageErrorOut(filename=filename, error=str(exc)))
 
     class_percentages = {
         cls: round((count / saved_count) * 100, 1) if saved_count else 0.0
@@ -274,11 +294,14 @@ async def save_images_batch(
 
     return BatchSaveOut(
         farm_id=farm_id,
+        total_images=len(files),
         saved_count=saved_count,
+        failed_count=len(errors),
         alert_count=alert_count,
         class_counts=class_counts,
         class_percentages=class_percentages,
-        message="Batch detections saved successfully",
+        errors=errors,
+        message="Batch detections saved successfully" if not errors else "Batch save completed with some file errors",
         saved_at=datetime.utcnow(),
     )
 
