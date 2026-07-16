@@ -56,6 +56,7 @@ def _ensure_dirs():
 
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_BATCH_FILES = 100
 
 
 async def _read_image_upload(file: UploadFile) -> tuple[bytes, str]:
@@ -187,6 +188,11 @@ async def analyze_images_batch(
     _ensure_dirs()
     if not files:
         raise HTTPException(status_code=400, detail="No images uploaded")
+    if len(files) > MAX_BATCH_FILES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many files. Maximum allowed per batch is {MAX_BATCH_FILES}.",
+        )
 
     results: list[BatchImagePredictionOut] = []
     errors: list[BatchImageErrorOut] = []
@@ -254,6 +260,11 @@ async def save_images_batch(
     _ensure_dirs()
     if not files:
         raise HTTPException(status_code=400, detail="No images uploaded")
+    if len(files) > MAX_BATCH_FILES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many files. Maximum allowed per batch is {MAX_BATCH_FILES}.",
+        )
 
     farm = get_farm_for_user(db, farm_id, user)
     class_counts = empty_class_counts()

@@ -1388,6 +1388,30 @@ function AnalysisPage({ farms, farmId, onFarmChange, onAnalyzed }) {
     URL.revokeObjectURL(url);
   }
 
+  function exportBatchErrorsCsv() {
+    if (!batchResult?.errors?.length) return;
+    const rows = [
+      ["filename", "error"],
+      ...batchResult.errors.map((e) => [e.filename || "", e.error || ""]),
+    ];
+    const csv = rows
+      .map((cols) =>
+        cols
+          .map((value) => `"${String(value).replace(/"/g, '""')}"`)
+          .join(",")
+      )
+      .join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `cropguard_batch_errors_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   async function analyse() {
     if (!file) {
       setError("Upload a photo first");
@@ -1660,6 +1684,9 @@ function AnalysisPage({ farms, farmId, onFarmChange, onAnalyzed }) {
                     </li>
                   ))}
                 </ul>
+                <button className="btn btn-sm btn-outline" style={{ marginTop: 8 }} onClick={exportBatchErrorsCsv}>
+                  Export Failed Files CSV
+                </button>
               </div>
             )}
             <div style={{ marginTop: 8, maxHeight: 260, overflow: "auto", border: "1px solid var(--border)", borderRadius: 8 }}>
