@@ -126,6 +126,20 @@ class AnalysisPreviewOut(BaseModel):
     analyzed_at: datetime
 
 
+class BatchImagePredictionOut(BaseModel):
+    filename: str
+    prediction: PredictionOut
+
+
+class BatchAnalysisOut(BaseModel):
+    total_images: int
+    class_counts: dict[str, int]
+    class_percentages: dict[str, float]
+    results: list[BatchImagePredictionOut]
+    message: str
+    analyzed_at: datetime
+
+
 class LeafAnalysisOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 

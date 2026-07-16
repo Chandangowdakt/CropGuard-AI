@@ -1190,6 +1190,10 @@ function LeafScanPage() {
 function AnalysisPage({ farms, farmId, onFarmChange, onAnalyzed }) {
   const { pushToast } = useToast();
   const [file, setFile] = useState(null);
+  const [batchFiles, setBatchFiles] = useState([]);
+  const [batchResult, setBatchResult] = useState(null);
+  const [batchLoading, setBatchLoading] = useState(false);
+  const [batchError, setBatchError] = useState("");
   const [preview, setPreview] = useState(null);
   const [dragOver, setDragOver] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
@@ -1203,6 +1207,7 @@ function AnalysisPage({ farms, farmId, onFarmChange, onAnalyzed }) {
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const inputRef = useRef(null);
+  const batchInputRef = useRef(null);
   const lastToastRef = useRef("");
 
   const selectedFarm = farms.find((f) => String(f.id) === String(farmId));
@@ -1251,6 +1256,55 @@ function AnalysisPage({ farms, farmId, onFarmChange, onAnalyzed }) {
     setSaveMessage("");
     setError("");
     if (inputRef.current) inputRef.current.value = "";
+  }
+
+  function pickBatchFiles(fileList) {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    for (const f of files) {
+      const err = validateImageFile(f);
+      if (err) {
+        setBatchError(err);
+        return;
+      }
+    }
+    setBatchFiles(files);
+    setBatchResult(null);
+    setBatchError("");
+  }
+
+  function resetBatch() {
+    setBatchFiles([]);
+    setBatchResult(null);
+    setBatchError("");
+    if (batchInputRef.current) batchInputRef.current.value = "";
+  }
+
+  async function analyseBatch() {
+    if (!batchFiles.length) {
+      setBatchError("Upload multiple photos first");
+      return;
+    }
+    setBatchLoading(true);
+    setBatchError("");
+    setBatchResult(null);
+    try {
+      const token = getToken();
+      const fd = new FormData();
+      batchFiles.forEach((f) => fd.append("files", f));
+      const res = await fetch(`${API_BASE}/api/detections/analyze-batch`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: fd,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Batch analysis failed");
+      setBatchResult(data);
+    } catch (err) {
+      setBatchError(err.message);
+    } finally {
+      setBatchLoading(false);
+    }
   }
 
   async function analyse() {
@@ -1442,6 +1496,77 @@ function AnalysisPage({ farms, farmId, onFarmChange, onAnalyzed }) {
           >
             Analyse This Photo
           </button>
+        )}
+      </div>
+
+      <div className="card analysis-upload-card" style={{ marginTop: 16 }}>
+        <div className="card-title">🗂 Batch Analysis (multiple images)</div>
+        <p style={{ color: "var(--muted)", marginBottom: 12 }}>
+          Upload multiple leaf photos. CropGuard will classify each image and show total Healthy / Bacterial / Septoria counts and percentages.
+        </p>
+        <input
+          ref={batchInputRef}
+          type="file"
+          multiple
+          accept="image/jpeg,image/png,image/jpg"
+          onChange={(e) => pickBatchFiles(e.target.files)}
+        />
+        <ErrorBox message={batchError} />
+        {batchFiles.length > 0 && (
+          <p style={{ marginTop: 8, color: "var(--muted)" }}>
+            Selected <strong>{batchFiles.length}</strong> images
+          </p>
+        )}
+        <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <button className="btn btn-primary" onClick={analyseBatch} disabled={batchLoading || !batchFiles.length}>
+            {batchLoading ? "Analysing Batch…" : "Analyse Batch"}
+          </button>
+          <button className="btn btn-outline" onClick={resetBatch} disabled={batchLoading}>
+            Clear
+          </button>
+        </div>
+
+        {batchResult && (
+          <div style={{ marginTop: 16 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 }}>
+              {Object.entries(batchResult.class_counts || {}).map(([cls, count]) => (
+                <div key={cls} className="card" style={{ padding: 12 }}>
+                  <div><ClassBadge cls={cls} /></div>
+                  <div style={{ fontSize: "1.4rem", fontWeight: 800, marginTop: 6 }}>{count}</div>
+                  <div style={{ color: "var(--muted)", fontSize: "0.9rem" }}>
+                    {(batchResult.class_percentages?.[cls] ?? 0).toFixed(1)}%
+                  </div>
+                </div>
+              ))}
+            </div>
+            <p style={{ marginTop: 10, color: "var(--muted)" }}>
+              Total analyzed: <strong>{batchResult.total_images}</strong>
+            </p>
+            <div style={{ marginTop: 8, maxHeight: 260, overflow: "auto", border: "1px solid var(--border)", borderRadius: 8 }}>
+              <table className="table" style={{ marginBottom: 0 }}>
+                <thead>
+                  <tr>
+                    <th>Image</th>
+                    <th>Class</th>
+                    <th>Confidence</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(batchResult.results || []).map((row, idx) => {
+                    const cls = row.prediction?.actual_class || row.prediction?.class || row.prediction?.predicted_class;
+                    const conf = Number(row.prediction?.confidence ?? 0);
+                    return (
+                      <tr key={`${row.filename}_${idx}`}>
+                        <td>{row.filename}</td>
+                        <td><ClassBadge cls={cls} /></td>
+                        <td><strong>{conf.toFixed(1)}%</strong></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
         )}
       </div>
 

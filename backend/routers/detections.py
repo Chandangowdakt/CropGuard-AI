@@ -27,6 +27,8 @@ from database import get_db
 from models import Alert, Detection, Farm, User
 from schemas import (
     AnalysisPreviewOut,
+    BatchAnalysisOut,
+    BatchImagePredictionOut,
     DetectionOut,
     DetectionResult,
     FarmReportOut,
@@ -170,6 +172,59 @@ async def analyze_image(
     return AnalysisPreviewOut(
         prediction=PredictionOut(**prediction),
         message=summary,
+        analyzed_at=datetime.utcnow(),
+    )
+
+
+@router.post("/analyze-batch", response_model=BatchAnalysisOut)
+async def analyze_images_batch(
+    files: list[UploadFile] = File(...),
+    _user: User = Depends(get_current_user),
+):
+    """Batch analysis for multiple uploaded images (no DB writes)."""
+    _ensure_dirs()
+    if not files:
+        raise HTTPException(status_code=400, detail="No images uploaded")
+
+    results: list[BatchImagePredictionOut] = []
+    class_counts = empty_class_counts()
+
+    for file in files:
+        image_bytes, _ext = await _read_image_upload(file)
+        prediction = _run_prediction(image_bytes)
+        predicted_class = prediction["class"]
+        actual_class = normalize_class(prediction.get("actual_class", predicted_class))
+        confidence = prediction.get("confidence", 0.0)
+
+        prediction_payload = {
+            "class": predicted_class,
+            "actual_class": actual_class,
+            "confidence": confidence,
+            "is_problem": is_problem(actual_class),
+            "message": prediction.get("message"),
+        }
+        results.append(
+            BatchImagePredictionOut(
+                filename=file.filename or "image",
+                prediction=PredictionOut(**prediction_payload),
+            )
+        )
+
+        if actual_class in class_counts:
+            class_counts[actual_class] += 1
+
+    total = len(results)
+    class_percentages = {
+        cls: round((count / total) * 100, 1) if total else 0.0
+        for cls, count in class_counts.items()
+    }
+
+    return BatchAnalysisOut(
+        total_images=total,
+        class_counts=class_counts,
+        class_percentages=class_percentages,
+        results=results,
+        message="Batch analysis complete",
         analyzed_at=datetime.utcnow(),
     )
 
