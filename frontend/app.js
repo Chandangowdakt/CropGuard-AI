@@ -1194,6 +1194,8 @@ function AnalysisPage({ farms, farmId, onFarmChange, onAnalyzed }) {
   const [batchResult, setBatchResult] = useState(null);
   const [batchLoading, setBatchLoading] = useState(false);
   const [batchError, setBatchError] = useState("");
+  const [batchSaving, setBatchSaving] = useState(false);
+  const [batchSaveMessage, setBatchSaveMessage] = useState("");
   const [preview, setPreview] = useState(null);
   const [dragOver, setDragOver] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
@@ -1271,12 +1273,14 @@ function AnalysisPage({ farms, farmId, onFarmChange, onAnalyzed }) {
     setBatchFiles(files);
     setBatchResult(null);
     setBatchError("");
+    setBatchSaveMessage("");
   }
 
   function resetBatch() {
     setBatchFiles([]);
     setBatchResult(null);
     setBatchError("");
+    setBatchSaveMessage("");
     if (batchInputRef.current) batchInputRef.current.value = "";
   }
 
@@ -1305,6 +1309,77 @@ function AnalysisPage({ farms, farmId, onFarmChange, onAnalyzed }) {
     } finally {
       setBatchLoading(false);
     }
+  }
+
+  async function saveBatchToFarm() {
+    if (!batchFiles.length) {
+      setBatchError("Upload multiple photos first");
+      return;
+    }
+    if (!farmId) {
+      setBatchError("Select a farm first");
+      return;
+    }
+    setBatchSaving(true);
+    setBatchError("");
+    setBatchSaveMessage("");
+    try {
+      const token = getToken();
+      const fd = new FormData();
+      fd.append("farm_id", farmId);
+      batchFiles.forEach((f) => fd.append("files", f));
+      const res = await fetch(`${API_BASE}/api/detections/save-batch`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: fd,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Batch save failed");
+      setBatchSaveMessage(
+        data.alert_count > 0
+          ? `Saved ${data.saved_count} images — ${data.alert_count} alerts created`
+          : `Saved ${data.saved_count} images to farm successfully`
+      );
+      if (onAnalyzed) onAnalyzed();
+      loadHistory();
+    } catch (err) {
+      setBatchError(err.message);
+    } finally {
+      setBatchSaving(false);
+    }
+  }
+
+  function exportBatchCsv() {
+    if (!batchResult?.results?.length) return;
+    const rows = [
+      ["filename", "class", "confidence", "is_problem"],
+      ...batchResult.results.map((row) => {
+        const pred = row.prediction || {};
+        const cls = pred.actual_class || pred.class || pred.predicted_class || "";
+        return [
+          row.filename || "",
+          cls,
+          Number(pred.confidence ?? 0).toFixed(2),
+          String(Boolean(pred.is_problem)),
+        ];
+      }),
+    ];
+    const csv = rows
+      .map((cols) =>
+        cols
+          .map((value) => `"${String(value).replace(/"/g, '""')}"`)
+          .join(",")
+      )
+      .join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `cropguard_batch_analysis_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   }
 
   async function analyse() {
@@ -1521,10 +1596,21 @@ function AnalysisPage({ farms, farmId, onFarmChange, onAnalyzed }) {
           <button className="btn btn-primary" onClick={analyseBatch} disabled={batchLoading || !batchFiles.length}>
             {batchLoading ? "Analysing Batch…" : "Analyse Batch"}
           </button>
-          <button className="btn btn-outline" onClick={resetBatch} disabled={batchLoading}>
+          <button className="btn btn-secondary" onClick={saveBatchToFarm} disabled={batchSaving || !batchFiles.length || !farmId}>
+            {batchSaving ? "Saving Batch…" : "Save Batch to Farm"}
+          </button>
+          <button className="btn btn-outline" onClick={exportBatchCsv} disabled={!batchResult?.results?.length}>
+            Export CSV
+          </button>
+          <button className="btn btn-outline" onClick={resetBatch} disabled={batchLoading || batchSaving}>
             Clear
           </button>
         </div>
+        {batchSaveMessage && (
+          <p style={{ marginTop: 10, color: "var(--secondary)", fontWeight: 700 }}>
+            {batchSaveMessage}
+          </p>
+        )}
 
         {batchResult && (
           <div style={{ marginTop: 16 }}>

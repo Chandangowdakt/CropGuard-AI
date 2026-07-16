@@ -140,6 +140,16 @@ class BatchAnalysisOut(BaseModel):
     analyzed_at: datetime
 
 
+class BatchSaveOut(BaseModel):
+    farm_id: int
+    saved_count: int
+    alert_count: int
+    class_counts: dict[str, int]
+    class_percentages: dict[str, float]
+    message: str
+    saved_at: datetime
+
+
 class LeafAnalysisOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 

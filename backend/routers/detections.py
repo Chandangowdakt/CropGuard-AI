@@ -29,6 +29,7 @@ from schemas import (
     AnalysisPreviewOut,
     BatchAnalysisOut,
     BatchImagePredictionOut,
+    BatchSaveOut,
     DetectionOut,
     DetectionResult,
     FarmReportOut,
@@ -226,6 +227,59 @@ async def analyze_images_batch(
         results=results,
         message="Batch analysis complete",
         analyzed_at=datetime.utcnow(),
+    )
+
+
+@router.post("/save-batch", response_model=BatchSaveOut, status_code=status.HTTP_201_CREATED)
+async def save_images_batch(
+    farm_id: int = Form(...),
+    files: list[UploadFile] = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Analyze and save multiple uploaded images to a farm, creating alerts as needed."""
+    _ensure_dirs()
+    if not files:
+        raise HTTPException(status_code=400, detail="No images uploaded")
+
+    farm = get_farm_for_user(db, farm_id, user)
+    class_counts = empty_class_counts()
+    saved_count = 0
+    alert_count = 0
+
+    for file in files:
+        image_bytes, ext = await _read_image_upload(file)
+        prediction = _run_prediction(image_bytes)
+        predicted_class = normalize_class(
+            prediction.get("actual_class", prediction.get("class"))
+        )
+        confidence = float(prediction.get("confidence", 0))
+        persist_prediction = {
+            "class": predicted_class,
+            "confidence": confidence,
+            "is_problem": is_problem(predicted_class),
+            "message": prediction.get("message"),
+        }
+        result = _persist_detection(db, farm, image_bytes, ext, persist_prediction)
+        saved_count += 1
+        if predicted_class in class_counts:
+            class_counts[predicted_class] += 1
+        if result.alert_created:
+            alert_count += 1
+
+    class_percentages = {
+        cls: round((count / saved_count) * 100, 1) if saved_count else 0.0
+        for cls, count in class_counts.items()
+    }
+
+    return BatchSaveOut(
+        farm_id=farm_id,
+        saved_count=saved_count,
+        alert_count=alert_count,
+        class_counts=class_counts,
+        class_percentages=class_percentages,
+        message="Batch detections saved successfully",
+        saved_at=datetime.utcnow(),
     )
 
 
