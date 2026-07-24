@@ -230,6 +230,11 @@ class ScanSessionCreateOut(BaseModel):
     session_id: int
 
 
+class ScanNextZoneOut(BaseModel):
+    session_id: int
+    plant_zone_id: str | None = None
+
+
 class ScanBulkDetectionItem(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 

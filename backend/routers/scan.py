@@ -1,7 +1,8 @@
 import base64
 import re
 import sys
-from datetime import datetime
+import threading
+from datetime import datetime, timedelta
 from pathlib import Path
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -23,6 +24,7 @@ from schemas import (
     ScanBulkDetectionsIn,
     ScanBulkDetectionsOut,
     ScanFrameAnalyzeOut,
+    ScanNextZoneOut,
     ScanSessionCreate,
     ScanSessionCreateOut,
     ScanSessionIn,
@@ -30,7 +32,7 @@ from schemas import (
     ScanSessionSummaryOut,
 )
 from scan_reporting import notify_scan_session_completed
-from scan_smoothing import reset_session, update_prediction
+from scan_smoothing import request_new_zone, reset_session, update_prediction
 from whatsapp_alerts import WHATSAPP_CONFIDENCE_THRESHOLD, send_whatsapp_alert
 
 router = APIRouter(prefix="/api/scan", tags=["scan"])
@@ -43,9 +45,11 @@ ALERT_THRESHOLD = 70.0
 SKIP_CLASSES = {"uncertain", "unavailable"}
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_BULK_DETECTIONS = 200
-# Save every Nth healthy frame during bulk submit (problems always saved when imaged)
-HEALTHY_SAMPLE_EVERY = 5
+# Abandoned active sessions older than this are auto-cancelled
+STALE_SESSION_HOURS = 6
 _ZONE_SAFE_RE = re.compile(r"[^A-Za-z0-9_\-]+")
+# Roles allowed to run Live Scan walks
+LIVE_SCAN_ROLES = ("manager", "admin", "farmer")
 
 
 def _ensure_dirs():
@@ -109,6 +113,43 @@ def _get_session_for_user(db: Session, session_id: int, user: User) -> ScanSessi
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scan session not found")
     get_farm_for_user(db, session.farm_id, user)
     return session
+
+
+def _cancel_stale_and_other_active(db: Session, user: User, keep_session_id: int | None = None) -> None:
+    """Cancel abandoned active sessions for this user (and globally stale ones they own)."""
+    cutoff = datetime.utcnow() - timedelta(hours=STALE_SESSION_HOURS)
+    q = db.query(ScanSession).filter(
+        ScanSession.manager_id == user.id,
+        ScanSession.status == "active",
+    )
+    for session in q.all():
+        if keep_session_id is not None and session.id == keep_session_id:
+            continue
+        if session.started_at and session.started_at < cutoff:
+            session.status = "cancelled"
+            session.completed_at = datetime.utcnow()
+            reset_session(session.id)
+        elif keep_session_id is None:
+            # Starting a new walk: close any still-open session from this user
+            session.status = "cancelled"
+            session.completed_at = datetime.utcnow()
+            reset_session(session.id)
+    db.commit()
+
+
+def _dispatch_whatsapp(pending: list[dict]) -> None:
+    for msg in pending:
+        try:
+            send_whatsapp_alert(
+                msg["farm_name"],
+                msg["class_name"],
+                msg["confidence"],
+                msg["timestamp"],
+                custom_body=msg["custom_body"],
+                plant_zone_id=msg.get("plant_zone_id"),
+            )
+        except Exception as exc:  # noqa: BLE001 — never fail the scan save path
+            print(f"WhatsApp dispatch failed: {exc}")
 
 
 def _flagged_count_for_session(db: Session, session_id: int) -> int:
@@ -264,7 +305,7 @@ async def analyze_frame(
     latitude: float | None = Form(None),
     longitude: float | None = Form(None),
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("manager", "admin")),
+    user: User = Depends(require_roles(*LIVE_SCAN_ROLES)),
 ):
     """Fast inference on a single live camera frame — no database writes."""
     active_session_id = None
@@ -314,10 +355,11 @@ async def analyze_frame(
 def create_scan_session(
     payload: ScanSessionCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(*LIVE_SCAN_ROLES)),
 ):
     """Start a new live walk-through scan session."""
     get_farm_for_user(db, payload.farm_id, user)
+    _cancel_stale_and_other_active(db, user)
     session = ScanSession(
         farm_id=payload.farm_id,
         manager_id=user.id,
@@ -353,11 +395,17 @@ def bulk_save_session_detections(
     session_id: int,
     payload: ScanBulkDetectionsIn,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(*LIVE_SCAN_ROLES)),
 ):
     """Bulk insert detections from a completed walk-through session."""
     _ensure_dirs()
     session = _get_session_for_user(db, session_id, user)
+    if session.status == "completed":
+        # Idempotent retry after a successful save
+        return ScanBulkDetectionsOut(
+            saved_count=0,
+            flagged_count=_flagged_count_for_session(db, session.id),
+        )
     if session.status != "active":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Session is not active")
 
@@ -370,7 +418,6 @@ def bulk_save_session_detections(
     farm = db.query(Farm).filter(Farm.id == session.farm_id).first()
     saved_count = 0
     flagged_count = 0
-    healthy_seen = 0
     saved_problem_zones: set[str] = set()
     pending_whatsapp: list[dict] = []
 
@@ -392,10 +439,8 @@ def bulk_save_session_detections(
                 continue
             saved_problem_zones.add(zone_key)
         elif is_healthy(cls):
-            healthy_seen += 1
-            if healthy_seen % HEALTHY_SAMPLE_EVERY != 0 or not item.image_base64:
-                continue
-            if item.confidence <= 0:
+            # Client already samples healthy frames — do not sample again
+            if not item.image_base64 or item.confidence <= 0:
                 continue
         else:
             continue
@@ -423,15 +468,8 @@ def bulk_save_session_detections(
 
     db.commit()
 
-    for msg in pending_whatsapp:
-        send_whatsapp_alert(
-            msg["farm_name"],
-            msg["class_name"],
-            msg["confidence"],
-            msg["timestamp"],
-            custom_body=msg["custom_body"],
-            plant_zone_id=msg.get("plant_zone_id"),
-        )
+    if pending_whatsapp:
+        threading.Thread(target=_dispatch_whatsapp, args=(pending_whatsapp,), daemon=True).start()
 
     return ScanBulkDetectionsOut(saved_count=saved_count, flagged_count=flagged_count)
 
@@ -440,10 +478,12 @@ def bulk_save_session_detections(
 def complete_scan_session(
     session_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(*LIVE_SCAN_ROLES)),
 ):
     """Mark a scan session complete, summarize counts, and notify admins."""
     session = _get_session_for_user(db, session_id, user)
+    if session.status == "completed":
+        return _session_to_summary(db, session)
     if session.status != "active":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Session is not active")
 
@@ -462,7 +502,7 @@ def complete_scan_session(
 def cancel_scan_session(
     session_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(*LIVE_SCAN_ROLES)),
 ):
     """Cancel an active walk-through without sending completion reports."""
     session = _get_session_for_user(db, session_id, user)
@@ -475,6 +515,20 @@ def cancel_scan_session(
     db.refresh(session)
     reset_session(session_id)
     return _session_to_summary(db, session)
+
+
+@router.post("/sessions/{session_id}/next-zone", response_model=ScanNextZoneOut)
+def mark_next_plant_zone(
+    session_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(*LIVE_SCAN_ROLES)),
+):
+    """Manual next-plant control when GPS is weak or plants are close together."""
+    session = _get_session_for_user(db, session_id, user)
+    if session.status != "active":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Session is not active")
+    zone_id = request_new_zone(session.id)
+    return ScanNextZoneOut(session_id=session.id, plant_zone_id=zone_id)
 
 
 @router.post("/submit-session", response_model=ScanSessionOut)

@@ -3307,7 +3307,7 @@ const LIVE_SCAN_TIPS = [
   "Fill the center box with one leaf — avoid soil, sky, or distant plants.",
   "Use daylight or torch; avoid heavy shadow and glare.",
   "Hold steady for 2–3 seconds so the AI can confirm disease.",
-  "Walk slowly. When a zone flags, note the plant then continue.",
+  "Walk slowly. Tap Next plant when you move to another plant without clear GPS.",
 ];
 
 function liveScanBorderClass(predClass, actualClass) {
@@ -3513,6 +3513,26 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
   useEffect(() => () => {
     stopCamera();
   }, [stopCamera]);
+
+  // Cancel only when leaving the page mid-walk (not on React remount / summary review)
+  useEffect(() => {
+    function cancelKeepalive() {
+      const sid = serverSessionIdRef.current;
+      const p = phaseRef.current;
+      if (sid == null || (p !== "scanning" && p !== "paused")) return;
+      const token = getToken();
+      try {
+        fetch(`${API_BASE}/api/scan/sessions/${sid}/cancel`, {
+          method: "POST",
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+          keepalive: true,
+        });
+      } catch { /* ignore */ }
+      serverSessionIdRef.current = null;
+    }
+    window.addEventListener("pagehide", cancelKeepalive);
+    return () => window.removeEventListener("pagehide", cancelKeepalive);
+  }, []);
 
   const analyzeFrame = useCallback(async () => {
     if (processingRef.current || phaseRef.current !== "scanning") return;
@@ -3774,6 +3794,23 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
     }
   }
 
+  async function markNextPlant() {
+    const sid = serverSessionIdRef.current;
+    if (sid == null) return;
+    try {
+      const res = await api(`/api/scan/sessions/${sid}/next-zone`, { method: "POST" });
+      setCurrent((prev) => ({
+        ...prev,
+        plantZoneId: res.plant_zone_id || prev.plantZoneId,
+        confirming: false,
+        isIssue: false,
+      }));
+      alertedZonesRef.current = new Set();
+    } catch (err) {
+      setError(err.message || "Could not mark next plant");
+    }
+  }
+
   async function discardSession() {
     const sid = serverSessionIdRef.current;
     sessionDetections.forEach((d) => {
@@ -4021,7 +4058,7 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
             </div>
           )}
 
-          <div className="live-tool-row">
+          <div className="live-tool-row live-tool-row-3">
             <button type="button" className="btn btn-outline live-tool-btn" onClick={switchCamera}>
               Flip camera
             </button>
@@ -4033,6 +4070,14 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
               title={torchSupported ? "Toggle torch" : "Torch not available"}
             >
               {torchOn ? "Torch off" : "Torch on"}
+            </button>
+            <button
+              type="button"
+              className="btn btn-outline live-tool-btn"
+              onClick={markNextPlant}
+              title="Start a new plant zone"
+            >
+              Next plant
             </button>
           </div>
 

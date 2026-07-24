@@ -2542,6 +2542,12 @@ tr:hover td { background: rgba(244, 247, 244, 0.6); }
   gap: 10px;
   margin-bottom: 12px;
 }
+.live-tool-row-3 {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+@media (max-width: 480px) {
+  .live-tool-row-3 { grid-template-columns: 1fr; }
+}
 .live-tool-btn {
   min-height: 44px;
 }

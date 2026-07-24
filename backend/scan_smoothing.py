@@ -47,6 +47,7 @@ class _SessionState:
     last_flag_ts: float = 0.0
     last_flag_lat: float | None = None
     last_flag_lon: float | None = None
+    force_new_zone: bool = False
 
 
 _sessions: dict[int, _SessionState] = defaultdict(_SessionState)
@@ -81,6 +82,22 @@ def reset_session(session_id: int | None) -> None:
     if session_id is None:
         return
     _sessions.pop(int(session_id), None)
+
+
+def request_new_zone(session_id: int | None) -> str | None:
+    """Mark the next confirmed problem as a new plant zone (manual next-plant)."""
+    if session_id is None:
+        return None
+    sid = int(session_id)
+    state = _sessions[sid]
+    state.force_new_zone = True
+    # If currently on a zone, bump immediately so UI can show the upcoming id
+    state.zone_seq += 1
+    state.last_zone_id = f"row-{sid}-{state.zone_seq}"
+    state.last_flag_ts = 0.0
+    state.last_flag_lat = None
+    state.last_flag_lon = None
+    return state.last_zone_id
 
 
 def update_prediction(
@@ -154,10 +171,17 @@ def update_prediction(
             and state.last_zone_id is not None
             and (now - state.last_flag_ts) >= ZONE_GAP_SECONDS
         )
-        need_new_zone = state.last_zone_id is None or moved or timed_out_no_gps
+        need_new_zone = (
+            state.last_zone_id is None
+            or state.force_new_zone
+            or moved
+            or timed_out_no_gps
+        )
         if need_new_zone:
-            state.zone_seq += 1
-            state.last_zone_id = f"row-{sid}-{state.zone_seq}"
+            if not state.force_new_zone or state.last_zone_id is None:
+                state.zone_seq += 1
+                state.last_zone_id = f"row-{sid}-{state.zone_seq}"
+            state.force_new_zone = False
             state.last_flag_ts = now
             state.last_flag_lat = latitude
             state.last_flag_lon = longitude
