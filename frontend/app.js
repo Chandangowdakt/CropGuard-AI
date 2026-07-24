@@ -3297,6 +3297,19 @@ function ReportsPage({ farms, farmId, onFarmChange }) {
 const LIVE_SCAN_INTERVAL_MS = 2000;
 const LIVE_SCAN_HEALTHY_SAMPLE_EVERY = 5;
 
+const LIVE_SCAN_ADVICE = {
+  Healthy: "Leaf looks healthy — keep walking the row.",
+  Bacterial: "Bacterial spot likely. Mark this plant, remove badly hit leaves, and apply copper bactericide.",
+  Septoria: "Septoria leaf spot likely. Remove spotted leaves, improve airflow, and apply fungicide.",
+};
+
+const LIVE_SCAN_TIPS = [
+  "Fill the center box with one leaf — avoid soil, sky, or distant plants.",
+  "Use daylight or torch; avoid heavy shadow and glare.",
+  "Hold steady for 2–3 seconds so the AI can confirm disease.",
+  "Walk slowly. When a zone flags, note the plant then continue.",
+];
+
 function liveScanBorderClass(predClass, actualClass) {
   const c = actualClass || predClass;
   if (!predClass || predClass === "unavailable" || predClass === "uncertain") return "live-border-gray";
@@ -3312,6 +3325,19 @@ function liveScanDisplayLabel(predClass, actualClass) {
   if (predClass === "unavailable") return "AI UNAVAILABLE";
   if (predClass === "uncertain") return `UNCERTAIN — ${normalizeClassKey(c).replace(/_/g, " ").toUpperCase()}`;
   return normalizeClassKey(c).replace(/_/g, " ").toUpperCase();
+}
+
+function liveScanAdvice(cls) {
+  const norm = normalizeClassKey(cls);
+  return LIVE_SCAN_ADVICE[norm] || "Check the leaf again in better light, closer to the camera.";
+}
+
+function liveScanConfidenceTone(confidence, isIssue, confirming) {
+  if (isIssue) return "danger";
+  if (confirming) return "warning";
+  if (confidence >= 70) return "good";
+  if (confidence >= 45) return "mid";
+  return "low";
 }
 
 function captureVideoFrameBlob(videoEl, canvasEl) {
@@ -3334,17 +3360,48 @@ function blobToBase64(blob) {
   });
 }
 
+function notifyLiveScanAlert() {
+  try {
+    if (navigator.vibrate) navigator.vibrate([80, 40, 120]);
+  } catch { /* ignore */ }
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "square";
+    osc.frequency.value = 880;
+    gain.gain.value = 0.04;
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    setTimeout(() => {
+      osc.stop();
+      ctx.close();
+    }, 180);
+  } catch { /* ignore */ }
+}
+
 function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
   const [phase, setPhase] = useState("idle");
   const [error, setError] = useState("");
   const [gps, setGps] = useState(null);
   const [gpsStatus, setGpsStatus] = useState("off"); // off | on | denied | weak
-  const [current, setCurrent] = useState({ className: "", actualClass: "", confidence: 0, plantZoneId: null, confirming: false });
+  const [current, setCurrent] = useState({
+    className: "", actualClass: "", confidence: 0, plantZoneId: null, confirming: false, isIssue: false,
+  });
   const [sessionDetections, setSessionDetections] = useState([]);
+  const [recentFrames, setRecentFrames] = useState([]);
   const [framesAnalyzed, setFramesAnalyzed] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [submitMessage, setSubmitMessage] = useState("");
   const [serverSessionId, setServerSessionId] = useState(null);
+  const [facingMode, setFacingMode] = useState("environment");
+  const [torchOn, setTorchOn] = useState(false);
+  const [torchSupported, setTorchSupported] = useState(false);
+  const [netStatus, setNetStatus] = useState(navigator.onLine ? "online" : "offline");
+  const [analyzing, setAnalyzing] = useState(false);
 
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -3358,6 +3415,8 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
   const serverSessionIdRef = useRef(null);
   const healthySampleRef = useRef(0);
   const startingRef = useRef(false);
+  const facingModeRef = useRef("environment");
+  const alertedZonesRef = useRef(new Set());
 
   const selectedFarm = farms.find((f) => String(f.id) === String(farmId));
   const managerName = user?.role === "manager"
@@ -3380,6 +3439,18 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
   useEffect(() => { phaseRef.current = phase; }, [phase]);
   useEffect(() => { farmIdRef.current = farmId; }, [farmId]);
   useEffect(() => { serverSessionIdRef.current = serverSessionId; }, [serverSessionId]);
+  useEffect(() => { facingModeRef.current = facingMode; }, [facingMode]);
+
+  useEffect(() => {
+    const on = () => setNetStatus("online");
+    const off = () => setNetStatus("offline");
+    window.addEventListener("online", on);
+    window.addEventListener("offline", off);
+    return () => {
+      window.removeEventListener("online", on);
+      window.removeEventListener("offline", off);
+    };
+  }, []);
 
   const stopGpsWatch = useCallback(() => {
     if (gpsWatchRef.current != null && navigator.geolocation) {
@@ -3398,6 +3469,8 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
   const stopCamera = useCallback(() => {
     stopCaptureLoop();
     stopGpsWatch();
+    setTorchOn(false);
+    setTorchSupported(false);
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
@@ -3416,17 +3489,44 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
     }
   }, []);
 
+  const attachStream = useCallback(async (mode) => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: mode } },
+      audio: false,
+    });
+    streamRef.current = stream;
+    if (videoRef.current) {
+      videoRef.current.srcObject = stream;
+      await videoRef.current.play();
+    }
+    const track = stream.getVideoTracks()[0];
+    const caps = track?.getCapabilities ? track.getCapabilities() : {};
+    setTorchSupported(Boolean(caps && caps.torch));
+    setTorchOn(false);
+    return stream;
+  }, []);
+
   useEffect(() => () => {
     stopCamera();
   }, [stopCamera]);
 
   const analyzeFrame = useCallback(async () => {
     if (processingRef.current || phaseRef.current !== "scanning") return;
+    if (!navigator.onLine) {
+      setNetStatus("offline");
+      setError("No internet — Live Scan needs a connection to the AI server.");
+      return;
+    }
     const video = videoRef.current;
     const canvas = canvasRef.current;
     if (!video || !canvas || video.readyState < 2) return;
 
     processingRef.current = true;
+    setAnalyzing(true);
     try {
       const blob = await captureVideoFrameBlob(video, canvas);
       if (!blob || phaseRef.current !== "scanning") return;
@@ -3449,6 +3549,8 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Frame analysis failed");
+      setNetStatus("online");
+      setError("");
 
       const predClass = data.class_name || data.class || "unavailable";
       const smoothedClass = data.smoothed_class || null;
@@ -3465,10 +3567,26 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
         confidence,
         plantZoneId,
         confirming,
+        isIssue,
       });
+      setRecentFrames((prev) => [
+        {
+          id: `${Date.now()}_${Math.random().toString(16).slice(2)}`,
+          label: normalizeClassKey(actualClass),
+          confidence,
+          isIssue,
+          confirming,
+          ts: Date.now(),
+        },
+        ...prev,
+      ].slice(0, 6));
 
-      // Confirmed problems: keep one best evidence image per plant zone
       if (isIssue) {
+        const zoneKey = plantZoneId || `anon-${Date.now()}`;
+        if (!alertedZonesRef.current.has(zoneKey)) {
+          alertedZonesRef.current.add(zoneKey);
+          notifyLiveScanAlert();
+        }
         const thumbUrl = URL.createObjectURL(blob);
         const imageBase64 = await blobToBase64(blob);
         const entry = {
@@ -3504,7 +3622,6 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
         return;
       }
 
-      // Sample healthy frames lightly for the report (no overlay spam)
       if (normalizeClassKey(actualClass) === "Healthy" && predClass !== "uncertain" && predClass !== "unavailable") {
         healthySampleRef.current += 1;
         if (healthySampleRef.current % LIVE_SCAN_HEALTHY_SAMPLE_EVERY === 0) {
@@ -3528,13 +3645,14 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
         }
       }
     } catch (err) {
+      setNetStatus(navigator.onLine ? "slow" : "offline");
       setError(typeof err?.message === "string" ? err.message : "Frame analysis failed");
     } finally {
       processingRef.current = false;
+      setAnalyzing(false);
     }
   }, []);
 
-  // Interval is owned by phase — avoids stale closures from Start/Resume
   useEffect(() => {
     stopCaptureLoop();
     if (phase !== "scanning") return undefined;
@@ -3554,14 +3672,18 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
     setError("");
     setSubmitMessage("");
     setSessionDetections([]);
+    setRecentFrames([]);
     setFramesAnalyzed(0);
     healthySampleRef.current = 0;
-    setCurrent({ className: "", actualClass: "", confidence: 0, plantZoneId: null, confirming: false });
+    alertedZonesRef.current = new Set();
+    setCurrent({ className: "", actualClass: "", confidence: 0, plantZoneId: null, confirming: false, isIssue: false });
     setServerSessionId(null);
     serverSessionIdRef.current = null;
     setGps(null);
     gpsRef.current = null;
     setGpsStatus(navigator.geolocation ? "weak" : "off");
+    setFacingMode("environment");
+    facingModeRef.current = "environment";
 
     let createdId = null;
     try {
@@ -3599,15 +3721,7 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
     }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: "environment" } },
-        audio: false,
-      });
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
+      await attachStream("environment");
       setPhase("scanning");
     } catch (err) {
       await cancelServerSession(createdId);
@@ -3627,8 +3741,37 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
   }
 
   function endScan() {
+    if (!window.confirm("End this row scan and review the summary?")) return;
     stopCamera();
     setPhase("summary");
+  }
+
+  async function switchCamera() {
+    const next = facingModeRef.current === "environment" ? "user" : "environment";
+    const wasScanning = phaseRef.current === "scanning";
+    if (wasScanning) setPhase("paused");
+    try {
+      await attachStream(next);
+      setFacingMode(next);
+      facingModeRef.current = next;
+      if (wasScanning) setPhase("scanning");
+    } catch (err) {
+      setError(err.message || "Could not switch camera");
+      if (wasScanning) setPhase("scanning");
+    }
+  }
+
+  async function toggleTorch() {
+    const track = streamRef.current?.getVideoTracks?.()[0];
+    if (!track) return;
+    const next = !torchOn;
+    try {
+      await track.applyConstraints({ advanced: [{ torch: next }] });
+      setTorchOn(next);
+    } catch {
+      setTorchSupported(false);
+      setError("Torch not supported on this camera");
+    }
   }
 
   async function discardSession() {
@@ -3637,8 +3780,9 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
       if (d.thumbUrl) URL.revokeObjectURL(d.thumbUrl);
     });
     setSessionDetections([]);
+    setRecentFrames([]);
     setFramesAnalyzed(0);
-    setCurrent({ className: "", actualClass: "", confidence: 0, plantZoneId: null, confirming: false });
+    setCurrent({ className: "", actualClass: "", confidence: 0, plantZoneId: null, confirming: false, isIssue: false });
     setSubmitMessage("");
     setServerSessionId(null);
     serverSessionIdRef.current = null;
@@ -3695,8 +3839,9 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
           if (d.thumbUrl) URL.revokeObjectURL(d.thumbUrl);
         });
         setSessionDetections([]);
+        setRecentFrames([]);
         setFramesAnalyzed(0);
-        setCurrent({ className: "", actualClass: "", confidence: 0, plantZoneId: null, confirming: false });
+        setCurrent({ className: "", actualClass: "", confidence: 0, plantZoneId: null, confirming: false, isIssue: false });
         setSubmitMessage("");
         setPhase("idle");
         setError("");
@@ -3714,6 +3859,16 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
       : gpsStatus === "weak" ? <span className="live-gps-badge live-gps-weak">GPS weak</span>
         : gpsStatus === "denied" ? <span className="live-gps-badge live-gps-denied">GPS off</span>
           : null;
+
+  const netBadge =
+    netStatus === "offline" ? <span className="live-net-badge live-net-off">Offline</span>
+      : netStatus === "slow" ? <span className="live-net-badge live-net-slow">Slow link</span>
+        : <span className="live-net-badge">Online</span>;
+
+  const confTone = liveScanConfidenceTone(current.confidence, current.isIssue, current.confirming);
+  const adviceText = current.className
+    ? liveScanAdvice(current.isIssue || current.confirming ? current.actualClass : current.actualClass)
+    : "";
 
   if (phase === "summary") {
     return (
@@ -3755,6 +3910,7 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
                     {d.plantZoneId && (
                       <div className="live-flagged-zone">Plant zone: {d.plantZoneId}</div>
                     )}
+                    <div className="live-flagged-advice">{liveScanAdvice(d.actualClass)}</div>
                     <div className="live-flagged-time">{new Date(d.timestamp).toLocaleString()}</div>
                     {d.lat != null && d.lon != null && (
                       <div className="live-flagged-gps">{d.lat.toFixed(5)}, {d.lon.toFixed(5)}</div>
@@ -3785,9 +3941,6 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
         <p>
           {selectedFarm?.name || "Select a farm"} · Manager: {managerName}
         </p>
-        <p className="live-scan-hint">
-          Walk slowly along the row. Hold the leaf in the center of the camera — disease is confirmed after a few matching frames.
-        </p>
         {farms.length > 0 && (
           <select className="live-scan-farm-select" value={farmId} onChange={(e) => onFarmChange(e.target.value)} disabled={phase === "scanning" || phase === "paused"}>
             {farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
@@ -3798,9 +3951,19 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
       <ErrorBox message={error} />
 
       {phase === "idle" && (
-        <button className="btn btn-primary live-scan-start-btn" onClick={startScan} disabled={!farmId}>
-          Start Row Scan
-        </button>
+        <>
+          <div className="live-howto card">
+            <div className="card-title">How to scan like a field AI app</div>
+            <ol className="live-howto-list">
+              {LIVE_SCAN_TIPS.map((tip) => (
+                <li key={tip}>{tip}</li>
+              ))}
+            </ol>
+          </div>
+          <button className="btn btn-primary live-scan-start-btn" onClick={startScan} disabled={!farmId}>
+            Start Row Scan
+          </button>
+        </>
       )}
 
       {(phase === "scanning" || phase === "paused") && (
@@ -3808,27 +3971,70 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
           <div className="live-scan-counter">
             Frames: <strong>{framesAnalyzed}</strong> | Zones flagged: <strong>{issuesFound}</strong>
             {gpsBadge}
+            {netBadge}
+            {analyzing && <span className="live-analyzing-badge">AI…</span>}
             {phase === "paused" && <span className="live-paused-badge">PAUSED</span>}
           </div>
 
           <div className={`live-video-wrap ${liveScanBorderClass(current.className, current.actualClass)}`}>
             <video ref={videoRef} className="live-video" playsInline muted autoPlay />
+            <div className="live-leaf-guide" aria-hidden="true">
+              <div className="live-leaf-guide-box" />
+              <div className="live-leaf-guide-caption">Center leaf here</div>
+            </div>
             <div className="live-video-overlay">
-              <div className="live-detection-label">
-                {current.className
-                  ? `${liveScanDisplayLabel(current.className, current.actualClass)} — ${current.confidence.toFixed(1)}%`
-                  : "Point at a leaf…"}
+              <div className="live-overlay-stack">
+                <div className="live-detection-label">
+                  {current.className
+                    ? `${liveScanDisplayLabel(current.className, current.actualClass)} — ${current.confidence.toFixed(1)}%`
+                    : "Point at a leaf…"}
+                </div>
+                <div className={`live-conf-meter live-conf-${confTone}`}>
+                  <div className="live-conf-fill" style={{ width: `${Math.max(4, Math.min(100, current.confidence || 0))}%` }} />
+                </div>
+                {current.confirming && (
+                  <div className="live-confirming-label">Confirming… hold steady</div>
+                )}
+                {current.plantZoneId && (
+                  <div className="live-plant-zone-label">PLANT ZONE {current.plantZoneId}</div>
+                )}
+                {current.className && (
+                  <div className="live-action-tip">{adviceText}</div>
+                )}
               </div>
-              {current.confirming && (
-                <div className="live-confirming-label">Confirming… hold steady</div>
-              )}
-              {current.plantZoneId && (
-                <div className="live-plant-zone-label">PLANT ZONE {current.plantZoneId}</div>
-              )}
             </div>
           </div>
 
           <canvas ref={canvasRef} style={{ display: "none" }} />
+
+          {recentFrames.length > 0 && (
+            <div className="live-recent-strip">
+              {recentFrames.map((r) => (
+                <div
+                  key={r.id}
+                  className={`live-recent-chip ${r.isIssue ? "issue" : r.confirming ? "confirming" : "ok"}`}
+                >
+                  <span>{r.label}</span>
+                  <strong>{r.confidence.toFixed(0)}%</strong>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="live-tool-row">
+            <button type="button" className="btn btn-outline live-tool-btn" onClick={switchCamera}>
+              Flip camera
+            </button>
+            <button
+              type="button"
+              className="btn btn-outline live-tool-btn"
+              onClick={toggleTorch}
+              disabled={!torchSupported}
+              title={torchSupported ? "Toggle torch" : "Torch not available"}
+            >
+              {torchOn ? "Torch off" : "Torch on"}
+            </button>
+          </div>
 
           <div className="live-scan-controls">
             <button className="btn btn-outline live-scan-btn" onClick={pauseScan}>

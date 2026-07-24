@@ -2398,6 +2398,32 @@ tr:hover td { background: rgba(244, 247, 244, 0.6); }
   color: #991b1b;
   background: #fef2f2;
 }
+.live-net-badge {
+  margin-left: 8px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--secondary);
+  background: #ecfdf3;
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+.live-net-off {
+  color: #991b1b;
+  background: #fef2f2;
+}
+.live-net-slow {
+  color: #92400e;
+  background: #fffbeb;
+}
+.live-analyzing-badge {
+  margin-left: 8px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  color: #1e3a8a;
+  background: #dbeafe;
+  border-radius: 6px;
+  padding: 2px 8px;
+}
 .live-confirming-label {
   margin-top: 4px;
   font-size: 0.78rem;
@@ -2412,6 +2438,118 @@ tr:hover td { background: rgba(244, 247, 244, 0.6); }
   font-size: 0.9rem;
   max-width: 36rem;
   line-height: 1.4;
+}
+.live-howto {
+  margin-bottom: 14px;
+}
+.live-howto-list {
+  margin: 0;
+  padding-left: 1.2rem;
+  color: var(--text);
+  font-size: 0.92rem;
+  line-height: 1.55;
+}
+.live-howto-list li { margin-bottom: 6px; }
+.live-leaf-guide {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 1;
+}
+.live-leaf-guide-box {
+  width: min(68%, 280px);
+  aspect-ratio: 1;
+  border: 2px dashed rgba(255, 255, 255, 0.85);
+  border-radius: 18px;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.22);
+}
+.live-leaf-guide-caption {
+  margin-top: 10px;
+  color: #fff;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.55);
+}
+.live-overlay-stack {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.live-conf-meter {
+  width: min(80%, 260px);
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.28);
+  overflow: hidden;
+}
+.live-conf-fill {
+  height: 100%;
+  border-radius: inherit;
+  transition: width 0.25s ease;
+  background: #d1d5db;
+}
+.live-conf-good .live-conf-fill { background: #34d399; }
+.live-conf-mid .live-conf-fill { background: #fbbf24; }
+.live-conf-low .live-conf-fill { background: #9ca3af; }
+.live-conf-warning .live-conf-fill { background: #f59e0b; }
+.live-conf-danger .live-conf-fill { background: #f87171; }
+.live-action-tip {
+  max-width: 92%;
+  margin-top: 2px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1.35;
+  text-align: center;
+}
+.live-recent-strip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 4px 2px 12px;
+  margin-bottom: 4px;
+  -webkit-overflow-scrolling: touch;
+}
+.live-recent-chip {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 78px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  font-size: 0.75rem;
+}
+.live-recent-chip strong { font-size: 0.85rem; }
+.live-recent-chip.ok { border-color: #86efac; }
+.live-recent-chip.confirming { border-color: #fcd34d; }
+.live-recent-chip.issue { border-color: #fca5a5; background: #fff1f2; }
+.live-tool-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.live-tool-btn {
+  min-height: 44px;
+}
+.live-flagged-advice {
+  margin-top: 6px;
+  font-size: 0.82rem;
+  color: var(--text);
+  line-height: 1.35;
 }
 .live-scan-actions {
   display: grid;
