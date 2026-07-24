@@ -66,6 +66,8 @@ def _migrate_detections():
             conn.execute(text("ALTER TABLE detections ADD COLUMN latitude REAL"))
         if "longitude" not in columns:
             conn.execute(text("ALTER TABLE detections ADD COLUMN longitude REAL"))
+        if "plant_zone_id" not in columns:
+            conn.execute(text("ALTER TABLE detections ADD COLUMN plant_zone_id VARCHAR(80)"))
 
 
 def _migrate_scan_sessions():

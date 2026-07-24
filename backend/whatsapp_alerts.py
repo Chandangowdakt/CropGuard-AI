@@ -52,8 +52,8 @@ _CLASS_ACTIONS = {
     "Septoria": "Apply fungicide. Improve air circulation. Remove and destroy affected leaves.",
 }
 
-# (farm_name, class_name) → last send time (UTC)
-_cooldown: dict[tuple[str, str], datetime] = {}
+# (farm_name, class_name, plant_zone_id) → last send time (UTC)
+_cooldown: dict[tuple[str, str, str], datetime] = {}
 
 
 def _is_configured() -> bool:
@@ -79,17 +79,20 @@ def send_whatsapp_alert(
     *,
     custom_body: str | None = None,
     bypass_cooldown: bool = False,
+    plant_zone_id: str | None = None,
 ) -> bool:
     """
     Send a WhatsApp alert via Twilio. Returns True if sent, False if skipped.
     Skips silently when not configured, on cooldown, or on API failure.
     Pass custom_body to override the default template (e.g. urgent scan alerts).
+    Cooldown is keyed by (farm, class, plant_zone) so one plant does not spam.
     """
     if not _is_configured():
         print("WhatsApp not configured")
         return False
 
-    key = (farm_name, class_name)
+    zone_key = plant_zone_id or "_"
+    key = (farm_name, class_name, zone_key)
     now = datetime.utcnow()
     last_sent = _cooldown.get(key)
     if not bypass_cooldown and last_sent and (now - last_sent) < timedelta(minutes=COOLDOWN_MINUTES):
@@ -101,12 +104,14 @@ def send_whatsapp_alert(
         problem_label = class_name.replace("_", " ").upper()
         action = _CLASS_ACTIONS.get(class_name, "Inspect the affected plants immediately")
         time_str = _format_timestamp(timestamp)
+        zone_line = f"\nPlant zone: {plant_zone_id}" if plant_zone_id else ""
         body = (
             f"🌿 CropGuard AI Alert\n"
             f"Farm: {farm_name}\n"
             f"Problem: {problem_label}\n"
             f"Confidence: {confidence:.1f}%\n"
-            f"Time: {time_str}\n"
+            f"Time: {time_str}"
+            f"{zone_line}\n"
             f"Action: {action}"
         )
 

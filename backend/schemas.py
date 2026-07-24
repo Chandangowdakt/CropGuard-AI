@@ -103,6 +103,10 @@ class DetectionOut(BaseModel):
     predicted_class: str
     confidence: float
     timestamp: datetime
+    latitude: float | None = None
+    longitude: float | None = None
+    plant_zone_id: str | None = None
+    session_id: int | None = None
 
     model_config = {"from_attributes": True}
 
@@ -209,6 +213,12 @@ class ScanFrameAnalyzeOut(BaseModel):
     )
     confidence: float
     is_problem: bool
+    actual_class: str | None = None
+    smoothed_class: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    plant_zone_id: str | None = None
+    analyzed_at: datetime | None = None
 
 
 class ScanSessionCreate(BaseModel):
@@ -232,6 +242,7 @@ class ScanBulkDetectionItem(BaseModel):
     lat: float | None = None
     lon: float | None = None
     image_base64: str | None = None
+    plant_zone_id: str | None = None
 
 
 class ScanBulkDetectionsIn(BaseModel):

@@ -3294,7 +3294,7 @@ function ReportsPage({ farms, farmId, onFarmChange }) {
 }
 
 // ── Live Scan page ────────────────────────────────────────────────────────────
-const LIVE_SCAN_INTERVAL_MS = 2500;
+const LIVE_SCAN_INTERVAL_MS = 2000;
 const LIVE_SCAN_ISSUE_CLASSES = new Set([
   "Bacterial", "Septoria", "bacterial", "septoria",
   "diseased", "pest_affected", "water_stressed",
@@ -3348,10 +3348,11 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
   const [phase, setPhase] = useState("idle");
   const [error, setError] = useState("");
   const [gps, setGps] = useState(null);
-  const [current, setCurrent] = useState({ className: "", actualClass: "", confidence: 0 });
+  const [current, setCurrent] = useState({ className: "", actualClass: "", confidence: 0, plantZoneId: null });
   const [sessionDetections, setSessionDetections] = useState([]);
   const [submitting, setSubmitting] = useState(false);
   const [submitMessage, setSubmitMessage] = useState("");
+  const [serverSessionId, setServerSessionId] = useState(null);
 
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -3359,7 +3360,9 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
   const processingRef = useRef(false);
   const intervalRef = useRef(null);
   const gpsRef = useRef(null);
+  const gpsWatchRef = useRef(null);
   const sessionRef = useRef([]);
+  const serverSessionIdRef = useRef(null);
 
   const selectedFarm = farms.find((f) => String(f.id) === String(farmId));
   const managerName = user?.role === "manager"
@@ -3382,11 +3385,19 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
 
   const flaggedPlants = sessionDetections.filter((d) => d.isIssue);
 
+  const stopGpsWatch = useCallback(() => {
+    if (gpsWatchRef.current != null && navigator.geolocation) {
+      navigator.geolocation.clearWatch(gpsWatchRef.current);
+      gpsWatchRef.current = null;
+    }
+  }, []);
+
   const stopCamera = useCallback(() => {
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
     }
+    stopGpsWatch();
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
@@ -3394,13 +3405,17 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
-  }, []);
+  }, [stopGpsWatch]);
 
   useEffect(() => () => stopCamera(), [stopCamera]);
 
   useEffect(() => {
     sessionRef.current = sessionDetections;
   }, [sessionDetections]);
+
+  useEffect(() => {
+    serverSessionIdRef.current = serverSessionId;
+  }, [serverSessionId]);
 
   const analyzeFrame = useCallback(async () => {
     if (processingRef.current || phase !== "scanning") return;
@@ -3418,6 +3433,9 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
       const fd = new FormData();
       fd.append("file", blob, "frame.jpg");
       fd.append("farm_id", farmId);
+      if (serverSessionIdRef.current != null) {
+        fd.append("session_id", String(serverSessionIdRef.current));
+      }
       if (pos?.lat != null) fd.append("latitude", String(pos.lat));
       if (pos?.lon != null) fd.append("longitude", String(pos.lon));
 
@@ -3431,14 +3449,15 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
       if (!res.ok) throw new Error(data.detail || "Frame analysis failed");
 
       const predClass = data.class_name || data.class || "unavailable";
-      const actualClass = data.actual_class || predClass;
+      const actualClass = data.actual_class || data.smoothed_class || predClass;
       const confidence = Number(data.confidence ?? 0);
-      const isIssue = isLiveScanIssue(predClass, actualClass);
+      const plantZoneId = data.plant_zone_id || null;
+      const isIssue = Boolean(data.is_problem) || isLiveScanIssue(predClass, actualClass);
 
-      setCurrent({ className: predClass, actualClass, confidence });
+      setCurrent({ className: predClass, actualClass, confidence, plantZoneId });
 
       let imageBase64 = null;
-      if (isIssue) {
+      if (isIssue || normalizeClassKey(actualClass) === "Healthy") {
         imageBase64 = await blobToBase64(blob);
       }
 
@@ -3453,6 +3472,7 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
         timestamp: data.analyzed_at || new Date().toISOString(),
         thumbUrl,
         imageBase64,
+        plantZoneId,
       };
       setSessionDetections((prev) => [...prev, entry]);
     } catch (err) {
@@ -3470,20 +3490,32 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
     setError("");
     setSubmitMessage("");
     setSessionDetections([]);
-    setCurrent({ className: "", actualClass: "", confidence: 0 });
+    setCurrent({ className: "", actualClass: "", confidence: 0, plantZoneId: null });
+    setServerSessionId(null);
+    serverSessionIdRef.current = null;
 
+    try {
+      const created = await api("/api/scan/sessions", {
+        method: "POST",
+        body: JSON.stringify({ farm_id: Number(farmId) }),
+      });
+      setServerSessionId(created.session_id);
+      serverSessionIdRef.current = created.session_id;
+    } catch (err) {
+      setError(err.message || "Could not start scan session");
+      return;
+    }
+
+    stopGpsWatch();
     if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
+      gpsWatchRef.current = navigator.geolocation.watchPosition(
         (pos) => {
           const coords = { lat: pos.coords.latitude, lon: pos.coords.longitude };
           setGps(coords);
           gpsRef.current = coords;
         },
-        () => {
-          setGps(null);
-          gpsRef.current = null;
-        },
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 5000 }
+        () => {},
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 3000 }
       );
     }
 
@@ -3533,8 +3565,10 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
       if (d.thumbUrl) URL.revokeObjectURL(d.thumbUrl);
     });
     setSessionDetections([]);
-    setCurrent({ className: "", actualClass: "", confidence: 0 });
+    setCurrent({ className: "", actualClass: "", confidence: 0, plantZoneId: null });
     setSubmitMessage("");
+    setServerSessionId(null);
+    serverSessionIdRef.current = null;
     setPhase("idle");
     setError("");
   }
@@ -3544,24 +3578,37 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
     setSubmitting(true);
     setError("");
     try {
-      const payload = {
-        farm_id: Number(farmId),
-        detections: sessionDetections.map((d) => ({
-          predicted_class: d.className,
-          actual_class: d.actualClass,
+      let sid = serverSessionId;
+      if (sid == null) {
+        const created = await api("/api/scan/sessions", {
+          method: "POST",
+          body: JSON.stringify({ farm_id: Number(farmId) }),
+        });
+        sid = created.session_id;
+        setServerSessionId(sid);
+      }
+
+      const detectionsPayload = sessionDetections
+        .filter((d) => d.className !== "unavailable" && d.className !== "uncertain")
+        .map((d) => ({
+          class: d.actualClass || d.className,
           confidence: d.confidence,
-          latitude: d.lat,
-          longitude: d.lon,
           timestamp: d.timestamp,
+          lat: d.lat,
+          lon: d.lon,
           image_base64: d.imageBase64 || null,
-        })),
-      };
-      const result = await api("/api/scan/submit-session", {
+          plant_zone_id: d.plantZoneId || null,
+        }));
+
+      const bulk = await api(`/api/scan/sessions/${sid}/detections`, {
         method: "POST",
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ detections: detectionsPayload }),
       });
+
+      await api(`/api/scan/sessions/${sid}/complete`, { method: "POST" });
+
       setSubmitMessage(
-        `Report saved — ${result.detections_saved} detection(s), ${result.alerts_created} alert(s)`
+        `Report saved — ${bulk.saved_count} detection(s), ${bulk.flagged_count} flagged plant zone(s)`
       );
       if (onSubmitted) onSubmitted();
       setTimeout(() => discardSession(), 1500);
@@ -3577,7 +3624,7 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
       <div className="live-scan-page fade-in">
         <div className="live-scan-header">
           <h2>Scan Session Summary</h2>
-          <p>{selectedFarm?.name || "Farm"} · {managerName}</p>
+          <p>{selectedFarm?.name || "Farm"} · {managerName}{serverSessionId != null ? ` · Session #${serverSessionId}` : ""}</p>
         </div>
         <ErrorBox message={error} />
         {submitMessage && <div className="alert-success">{submitMessage}</div>}
@@ -3605,6 +3652,9 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
                   <img className="live-flagged-thumb" src={d.thumbUrl} alt="" />
                   <div className="live-flagged-meta">
                     <div><ClassBadge cls={d.actualClass} /> <strong>{d.confidence.toFixed(1)}%</strong></div>
+                    {d.plantZoneId && (
+                      <div className="live-flagged-zone">Plant zone: {d.plantZoneId}</div>
+                    )}
                     <div className="live-flagged-time">{new Date(d.timestamp).toLocaleString()}</div>
                     {d.lat != null && d.lon != null && (
                       <div className="live-flagged-gps">📍 {d.lat.toFixed(5)}, {d.lon.toFixed(5)}</div>
@@ -3654,6 +3704,7 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
         <>
           <div className="live-scan-counter">
             Plants scanned: <strong>{plantsScanned}</strong> | Issues found: <strong>{issuesFound}</strong>
+            {gps && <span className="live-gps-badge">GPS on</span>}
             {phase === "paused" && <span className="live-paused-badge">PAUSED</span>}
           </div>
 
@@ -3665,6 +3716,9 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
                   ? `${liveScanDisplayLabel(current.className, current.actualClass)} — ${current.confidence.toFixed(1)}%`
                   : "Scanning…"}
               </div>
+              {current.plantZoneId && (
+                <div className="live-plant-zone-label">PLANT ZONE {current.plantZoneId}</div>
+              )}
             </div>
           </div>
 

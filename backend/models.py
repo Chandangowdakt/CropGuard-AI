@@ -128,6 +128,7 @@ class Detection(Base):
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    plant_zone_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     farm: Mapped["Farm"] = relationship("Farm", back_populates="detections")

@@ -16,6 +16,7 @@ from ai_engine import ModelLoadError, predict_image_bytes
 from auth import get_current_user, get_farm_for_user, require_roles
 from class_constants import is_healthy, is_problem, normalize_class
 from database import get_db
+from leaf_focus import center_crop_image_bytes
 from models import Alert, Detection, Farm, ScanSession, User
 from schemas import (
     ScanBulkDetectionsIn,
@@ -28,6 +29,8 @@ from schemas import (
     ScanSessionSummaryOut,
 )
 from scan_reporting import notify_scan_session_completed
+from scan_smoothing import reset_session, update_prediction
+from whatsapp_alerts import WHATSAPP_CONFIDENCE_THRESHOLD, send_whatsapp_alert
 
 router = APIRouter(prefix="/api/scan", tags=["scan"])
 
@@ -38,6 +41,8 @@ SCAN_FLAGS_DIR = STORAGE_DIR / "scan_flags"
 ALERT_THRESHOLD = 70.0
 SKIP_CLASSES = {"uncertain", "unavailable"}
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+# Save every Nth healthy frame during bulk submit (problems always saved when imaged)
+HEALTHY_SAMPLE_EVERY = 5
 
 
 def _ensure_dirs():
@@ -57,7 +62,8 @@ async def _read_frame_upload(file: UploadFile) -> bytes:
 
 def _run_prediction(image_bytes: bytes) -> dict:
     try:
-        return predict_image_bytes(image_bytes)
+        focused = center_crop_image_bytes(image_bytes)
+        return predict_image_bytes(focused)
     except ModelLoadError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except ValueError as exc:
@@ -132,9 +138,11 @@ def _save_flagged_detection(
     latitude: float | None,
     longitude: float | None,
     timestamp: datetime,
+    plant_zone_id: str | None = None,
 ) -> Detection:
     stamp = timestamp.strftime("%Y%m%d_%H%M%S_%f")
-    flagged_path = SCAN_FLAGS_DIR / f"session{session.id}_{predicted_class}_{stamp}.jpg"
+    zone_tag = f"_{plant_zone_id}" if plant_zone_id else ""
+    flagged_path = SCAN_FLAGS_DIR / f"session{session.id}{zone_tag}_{predicted_class}_{stamp}.jpg"
     flagged_path.write_bytes(image_bytes)
 
     detection = Detection(
@@ -145,6 +153,7 @@ def _save_flagged_detection(
         confidence=confidence,
         latitude=latitude,
         longitude=longitude,
+        plant_zone_id=plant_zone_id,
         timestamp=timestamp,
     )
     db.add(detection)
@@ -160,6 +169,29 @@ def _save_flagged_detection(
             flagged_image_path=str(flagged_path),
         )
         db.add(alert)
+
+        if confidence > WHATSAPP_CONFIDENCE_THRESHOLD:
+            loc = ""
+            if latitude is not None and longitude is not None:
+                loc = f"\nGPS: {latitude:.5f}, {longitude:.5f}"
+            zone = f"\nPlant zone: {plant_zone_id}" if plant_zone_id else ""
+            body = (
+                f"🌿 CropGuard AI Alert\n"
+                f"Farm: {farm.name}\n"
+                f"Problem: {canonical.upper()}\n"
+                f"Confidence: {confidence:.1f}%\n"
+                f"Time: {timestamp.strftime('%Y-%m-%d %H:%M')}"
+                f"{zone}{loc}\n"
+                f"Action: Inspect this plant zone immediately"
+            )
+            send_whatsapp_alert(
+                farm.name,
+                canonical,
+                confidence,
+                timestamp,
+                custom_body=body,
+                plant_zone_id=plant_zone_id,
+            )
 
     return detection
 
@@ -209,22 +241,45 @@ def _save_detection_with_alert(
 @router.post("/analyze-frame", response_model=ScanFrameAnalyzeOut)
 async def analyze_frame(
     file: UploadFile = File(...),
+    farm_id: int | None = Form(None),
+    session_id: int | None = Form(None),
+    latitude: float | None = Form(None),
+    longitude: float | None = Form(None),
+    db: Session = Depends(get_db),
     user: User = Depends(require_roles("manager", "admin")),
 ):
     """Fast inference on a single live camera frame — no database writes."""
+    if farm_id is not None:
+        get_farm_for_user(db, farm_id, user)
+
     image_bytes = await _read_frame_upload(file)
     prediction = _run_prediction(image_bytes)
 
     pred_class = prediction.get("class", "unavailable")
+    actual_class = prediction.get("actual_class") or pred_class
     confidence = float(prediction.get("confidence", 0))
-    problem_detected = (
-        bool(prediction.get("is_problem", False)) or is_problem(pred_class)
-    ) and pred_class not in SKIP_CLASSES
+
+    smoothed = update_prediction(
+        session_id,
+        actual_class if pred_class not in SKIP_CLASSES else pred_class,
+        confidence,
+        latitude,
+        longitude,
+    )
+    smoothed_class = smoothed["smoothed_class"]
+    display_class = pred_class if pred_class in SKIP_CLASSES else smoothed_class
+    problem_detected = bool(smoothed["is_confirmed_problem"]) and display_class not in SKIP_CLASSES
 
     return ScanFrameAnalyzeOut(
-        predicted_class=pred_class,
-        confidence=confidence,
+        predicted_class=display_class,
+        confidence=float(smoothed["smoothed_confidence"] if pred_class not in SKIP_CLASSES else confidence),
         is_problem=problem_detected,
+        actual_class=actual_class if pred_class not in SKIP_CLASSES else None,
+        smoothed_class=smoothed_class if pred_class not in SKIP_CLASSES else None,
+        latitude=latitude,
+        longitude=longitude,
+        plant_zone_id=smoothed.get("plant_zone_id"),
+        analyzed_at=datetime.utcnow(),
     )
 
 
@@ -245,6 +300,7 @@ def create_scan_session(
     db.add(session)
     db.commit()
     db.refresh(session)
+    reset_session(session.id)
     return ScanSessionCreateOut(session_id=session.id)
 
 
@@ -281,6 +337,7 @@ def bulk_save_session_detections(
     farm = db.query(Farm).filter(Farm.id == session.farm_id).first()
     saved_count = 0
     flagged_count = 0
+    healthy_seen = 0
 
     for item in payload.detections:
         cls = _normalize_class(item.predicted_class)
@@ -289,10 +346,16 @@ def bulk_save_session_detections(
 
         _increment_session_counts(session, cls)
 
-        if is_healthy(cls) or item.confidence <= ALERT_THRESHOLD:
-            continue
-        if not item.image_base64:
-            continue
+        # Always persist problem frames with image; sample healthy frames
+        if is_healthy(cls):
+            healthy_seen += 1
+            if healthy_seen % HEALTHY_SAMPLE_EVERY != 0 or not item.image_base64:
+                continue
+            if item.confidence <= 0:
+                continue
+        else:
+            if item.confidence <= ALERT_THRESHOLD or not item.image_base64:
+                continue
 
         image_bytes = _decode_image_base64(item.image_base64)
         _save_flagged_detection(
@@ -305,9 +368,11 @@ def bulk_save_session_detections(
             item.lat,
             item.lon,
             item.timestamp,
+            plant_zone_id=item.plant_zone_id,
         )
         saved_count += 1
-        flagged_count += 1
+        if is_problem(cls):
+            flagged_count += 1
 
     db.commit()
     return ScanBulkDetectionsOut(saved_count=saved_count, flagged_count=flagged_count)
@@ -330,6 +395,7 @@ def complete_scan_session(
     db.commit()
     db.refresh(session)
 
+    reset_session(session_id)
     notify_scan_session_completed(db, session, farm)
     return _session_to_summary(db, session)
 
