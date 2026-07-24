@@ -3295,10 +3295,7 @@ function ReportsPage({ farms, farmId, onFarmChange }) {
 
 // ── Live Scan page ────────────────────────────────────────────────────────────
 const LIVE_SCAN_INTERVAL_MS = 2000;
-const LIVE_SCAN_ISSUE_CLASSES = new Set([
-  "Bacterial", "Septoria", "bacterial", "septoria",
-  "diseased", "pest_affected", "water_stressed",
-]);
+const LIVE_SCAN_HEALTHY_SAMPLE_EVERY = 5;
 
 function liveScanBorderClass(predClass, actualClass) {
   const c = actualClass || predClass;
@@ -3315,13 +3312,6 @@ function liveScanDisplayLabel(predClass, actualClass) {
   if (predClass === "unavailable") return "AI UNAVAILABLE";
   if (predClass === "uncertain") return `UNCERTAIN — ${normalizeClassKey(c).replace(/_/g, " ").toUpperCase()}`;
   return normalizeClassKey(c).replace(/_/g, " ").toUpperCase();
-}
-
-function isLiveScanIssue(predClass, actualClass) {
-  if (predClass === "uncertain" || predClass === "unavailable") return false;
-  const c = actualClass || predClass;
-  if (LIVE_SCAN_ISSUE_CLASSES.has(c)) return true;
-  return isProblemClass(c);
 }
 
 function captureVideoFrameBlob(videoEl, canvasEl) {
@@ -3348,8 +3338,10 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
   const [phase, setPhase] = useState("idle");
   const [error, setError] = useState("");
   const [gps, setGps] = useState(null);
-  const [current, setCurrent] = useState({ className: "", actualClass: "", confidence: 0, plantZoneId: null });
+  const [gpsStatus, setGpsStatus] = useState("off"); // off | on | denied | weak
+  const [current, setCurrent] = useState({ className: "", actualClass: "", confidence: 0, plantZoneId: null, confirming: false });
   const [sessionDetections, setSessionDetections] = useState([]);
+  const [framesAnalyzed, setFramesAnalyzed] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [submitMessage, setSubmitMessage] = useState("");
   const [serverSessionId, setServerSessionId] = useState(null);
@@ -3361,8 +3353,11 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
   const intervalRef = useRef(null);
   const gpsRef = useRef(null);
   const gpsWatchRef = useRef(null);
-  const sessionRef = useRef([]);
+  const phaseRef = useRef("idle");
+  const farmIdRef = useRef(farmId);
   const serverSessionIdRef = useRef(null);
+  const healthySampleRef = useRef(0);
+  const startingRef = useRef(false);
 
   const selectedFarm = farms.find((f) => String(f.id) === String(farmId));
   const managerName = user?.role === "manager"
@@ -3371,9 +3366,8 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
       ? "Growteq Ops"
       : "Growteq Field Manager";
 
-  const plantsScanned = sessionDetections.length;
-  const issuesFound = sessionDetections.filter((d) => d.isIssue).length;
-
+  const flaggedZones = sessionDetections.filter((d) => d.isIssue);
+  const issuesFound = flaggedZones.length;
   const breakdown = sessionDetections.reduce((acc, d) => {
     const norm = normalizeClassKey(d.actualClass || d.className);
     if (norm === "Healthy") acc.healthy += 1;
@@ -3383,7 +3377,9 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
     return acc;
   }, { healthy: 0, bacterial: 0, septoria: 0, other: 0 });
 
-  const flaggedPlants = sessionDetections.filter((d) => d.isIssue);
+  useEffect(() => { phaseRef.current = phase; }, [phase]);
+  useEffect(() => { farmIdRef.current = farmId; }, [farmId]);
+  useEffect(() => { serverSessionIdRef.current = serverSessionId; }, [serverSessionId]);
 
   const stopGpsWatch = useCallback(() => {
     if (gpsWatchRef.current != null && navigator.geolocation) {
@@ -3392,11 +3388,15 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
     }
   }, []);
 
-  const stopCamera = useCallback(() => {
+  const stopCaptureLoop = useCallback(() => {
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
     }
+  }, []);
+
+  const stopCamera = useCallback(() => {
+    stopCaptureLoop();
     stopGpsWatch();
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
@@ -3405,20 +3405,23 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
-  }, [stopGpsWatch]);
+  }, [stopCaptureLoop, stopGpsWatch]);
 
-  useEffect(() => () => stopCamera(), [stopCamera]);
+  const cancelServerSession = useCallback(async (sid) => {
+    if (sid == null) return;
+    try {
+      await api(`/api/scan/sessions/${sid}/cancel`, { method: "POST" });
+    } catch {
+      /* best-effort */
+    }
+  }, []);
 
-  useEffect(() => {
-    sessionRef.current = sessionDetections;
-  }, [sessionDetections]);
-
-  useEffect(() => {
-    serverSessionIdRef.current = serverSessionId;
-  }, [serverSessionId]);
+  useEffect(() => () => {
+    stopCamera();
+  }, [stopCamera]);
 
   const analyzeFrame = useCallback(async () => {
-    if (processingRef.current || phase !== "scanning") return;
+    if (processingRef.current || phaseRef.current !== "scanning") return;
     const video = videoRef.current;
     const canvas = canvasRef.current;
     if (!video || !canvas || video.readyState < 2) return;
@@ -3426,13 +3429,12 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
     processingRef.current = true;
     try {
       const blob = await captureVideoFrameBlob(video, canvas);
-      if (!blob) return;
+      if (!blob || phaseRef.current !== "scanning") return;
 
-      const thumbUrl = URL.createObjectURL(blob);
       const pos = gpsRef.current;
       const fd = new FormData();
       fd.append("file", blob, "frame.jpg");
-      fd.append("farm_id", farmId);
+      if (farmIdRef.current) fd.append("farm_id", farmIdRef.current);
       if (serverSessionIdRef.current != null) {
         fd.append("session_id", String(serverSessionIdRef.current));
       }
@@ -3449,60 +3451,130 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
       if (!res.ok) throw new Error(data.detail || "Frame analysis failed");
 
       const predClass = data.class_name || data.class || "unavailable";
-      const actualClass = data.actual_class || data.smoothed_class || predClass;
+      const smoothedClass = data.smoothed_class || null;
+      const actualClass = smoothedClass || data.actual_class || predClass;
       const confidence = Number(data.confidence ?? 0);
       const plantZoneId = data.plant_zone_id || null;
-      const isIssue = Boolean(data.is_problem) || isLiveScanIssue(predClass, actualClass);
+      const isIssue = Boolean(data.is_problem);
+      const confirming = !isIssue && isProblemClass(data.actual_class || predClass);
 
-      setCurrent({ className: predClass, actualClass, confidence, plantZoneId });
-
-      let imageBase64 = null;
-      if (isIssue || normalizeClassKey(actualClass) === "Healthy") {
-        imageBase64 = await blobToBase64(blob);
-      }
-
-      const entry = {
-        id: `${Date.now()}_${Math.random().toString(16).slice(2)}`,
+      setFramesAnalyzed((n) => n + 1);
+      setCurrent({
         className: predClass,
         actualClass,
         confidence,
-        isIssue,
-        lat: data.latitude ?? pos?.lat ?? null,
-        lon: data.longitude ?? pos?.lon ?? null,
-        timestamp: data.analyzed_at || new Date().toISOString(),
-        thumbUrl,
-        imageBase64,
         plantZoneId,
-      };
-      setSessionDetections((prev) => [...prev, entry]);
+        confirming,
+      });
+
+      // Confirmed problems: keep one best evidence image per plant zone
+      if (isIssue) {
+        const thumbUrl = URL.createObjectURL(blob);
+        const imageBase64 = await blobToBase64(blob);
+        const entry = {
+          id: `${Date.now()}_${Math.random().toString(16).slice(2)}`,
+          className: predClass,
+          actualClass,
+          confidence,
+          isIssue: true,
+          lat: data.latitude ?? pos?.lat ?? null,
+          lon: data.longitude ?? pos?.lon ?? null,
+          timestamp: data.analyzed_at || new Date().toISOString(),
+          thumbUrl,
+          imageBase64,
+          plantZoneId,
+        };
+        setSessionDetections((prev) => {
+          if (plantZoneId) {
+            const idx = prev.findIndex((d) => d.isIssue && d.plantZoneId === plantZoneId);
+            if (idx >= 0) {
+              const older = prev[idx];
+              if (confidence <= older.confidence) {
+                URL.revokeObjectURL(thumbUrl);
+                return prev;
+              }
+              if (older.thumbUrl) URL.revokeObjectURL(older.thumbUrl);
+              const next = prev.slice();
+              next[idx] = entry;
+              return next;
+            }
+          }
+          return [...prev, entry];
+        });
+        return;
+      }
+
+      // Sample healthy frames lightly for the report (no overlay spam)
+      if (normalizeClassKey(actualClass) === "Healthy" && predClass !== "uncertain" && predClass !== "unavailable") {
+        healthySampleRef.current += 1;
+        if (healthySampleRef.current % LIVE_SCAN_HEALTHY_SAMPLE_EVERY === 0) {
+          const imageBase64 = await blobToBase64(blob);
+          setSessionDetections((prev) => [
+            ...prev,
+            {
+              id: `${Date.now()}_${Math.random().toString(16).slice(2)}`,
+              className: predClass,
+              actualClass: "Healthy",
+              confidence,
+              isIssue: false,
+              lat: data.latitude ?? pos?.lat ?? null,
+              lon: data.longitude ?? pos?.lon ?? null,
+              timestamp: data.analyzed_at || new Date().toISOString(),
+              thumbUrl: null,
+              imageBase64,
+              plantZoneId: null,
+            },
+          ]);
+        }
+      }
     } catch (err) {
-      setError(err.message);
+      setError(typeof err?.message === "string" ? err.message : "Frame analysis failed");
     } finally {
       processingRef.current = false;
     }
-  }, [farmId, phase]);
+  }, []);
+
+  // Interval is owned by phase — avoids stale closures from Start/Resume
+  useEffect(() => {
+    stopCaptureLoop();
+    if (phase !== "scanning") return undefined;
+    analyzeFrame();
+    intervalRef.current = setInterval(() => {
+      analyzeFrame();
+    }, LIVE_SCAN_INTERVAL_MS);
+    return () => stopCaptureLoop();
+  }, [phase, analyzeFrame, stopCaptureLoop]);
 
   async function startScan() {
-    if (!farmId) {
-      setError("Select a farm first");
+    if (!farmId || startingRef.current) {
+      if (!farmId) setError("Select a farm first");
       return;
     }
+    startingRef.current = true;
     setError("");
     setSubmitMessage("");
     setSessionDetections([]);
-    setCurrent({ className: "", actualClass: "", confidence: 0, plantZoneId: null });
+    setFramesAnalyzed(0);
+    healthySampleRef.current = 0;
+    setCurrent({ className: "", actualClass: "", confidence: 0, plantZoneId: null, confirming: false });
     setServerSessionId(null);
     serverSessionIdRef.current = null;
+    setGps(null);
+    gpsRef.current = null;
+    setGpsStatus(navigator.geolocation ? "weak" : "off");
 
+    let createdId = null;
     try {
       const created = await api("/api/scan/sessions", {
         method: "POST",
         body: JSON.stringify({ farm_id: Number(farmId) }),
       });
-      setServerSessionId(created.session_id);
-      serverSessionIdRef.current = created.session_id;
+      createdId = created.session_id;
+      setServerSessionId(createdId);
+      serverSessionIdRef.current = createdId;
     } catch (err) {
       setError(err.message || "Could not start scan session");
+      startingRef.current = false;
       return;
     }
 
@@ -3510,11 +3582,18 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
     if (navigator.geolocation) {
       gpsWatchRef.current = navigator.geolocation.watchPosition(
         (pos) => {
-          const coords = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+          const coords = {
+            lat: pos.coords.latitude,
+            lon: pos.coords.longitude,
+            accuracy: pos.coords.accuracy,
+          };
           setGps(coords);
           gpsRef.current = coords;
+          setGpsStatus(pos.coords.accuracy != null && pos.coords.accuracy > 40 ? "weak" : "on");
         },
-        () => {},
+        (geoErr) => {
+          setGpsStatus(geoErr?.code === 1 ? "denied" : "weak");
+        },
         { enableHighAccuracy: true, timeout: 10000, maximumAge: 3000 }
       );
     }
@@ -3530,75 +3609,73 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
         await videoRef.current.play();
       }
       setPhase("scanning");
-      intervalRef.current = setInterval(analyzeFrame, LIVE_SCAN_INTERVAL_MS);
-      analyzeFrame();
     } catch (err) {
+      await cancelServerSession(createdId);
+      setServerSessionId(null);
+      serverSessionIdRef.current = null;
+      stopGpsWatch();
       setError(err.message || "Camera permission denied");
+      setPhase("idle");
+    } finally {
+      startingRef.current = false;
     }
   }
 
   function pauseScan() {
-    if (phase === "scanning") {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
-      setPhase("paused");
-    } else if (phase === "paused") {
-      setPhase("scanning");
-      intervalRef.current = setInterval(analyzeFrame, LIVE_SCAN_INTERVAL_MS);
-      analyzeFrame();
-    }
+    if (phase === "scanning") setPhase("paused");
+    else if (phase === "paused") setPhase("scanning");
   }
 
   function endScan() {
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    }
     stopCamera();
     setPhase("summary");
   }
 
-  function discardSession() {
+  async function discardSession() {
+    const sid = serverSessionIdRef.current;
     sessionDetections.forEach((d) => {
       if (d.thumbUrl) URL.revokeObjectURL(d.thumbUrl);
     });
     setSessionDetections([]);
-    setCurrent({ className: "", actualClass: "", confidence: 0, plantZoneId: null });
+    setFramesAnalyzed(0);
+    setCurrent({ className: "", actualClass: "", confidence: 0, plantZoneId: null, confirming: false });
     setSubmitMessage("");
     setServerSessionId(null);
     serverSessionIdRef.current = null;
     setPhase("idle");
     setError("");
+    setGpsStatus("off");
+    stopCamera();
+    await cancelServerSession(sid);
   }
 
   async function submitReport() {
-    if (!farmId || !sessionDetections.length) return;
+    if (!farmId) return;
+    const sid = serverSessionId;
+    if (sid == null) {
+      setError("No active scan session to submit");
+      return;
+    }
+    const toSave = sessionDetections.filter(
+      (d) => d.imageBase64 && d.className !== "unavailable" && d.className !== "uncertain"
+    );
+    if (!toSave.length && framesAnalyzed === 0) {
+      setError("No frames were analyzed in this session");
+      return;
+    }
+
     setSubmitting(true);
     setError("");
     try {
-      let sid = serverSessionId;
-      if (sid == null) {
-        const created = await api("/api/scan/sessions", {
-          method: "POST",
-          body: JSON.stringify({ farm_id: Number(farmId) }),
-        });
-        sid = created.session_id;
-        setServerSessionId(sid);
-      }
-
-      const detectionsPayload = sessionDetections
-        .filter((d) => d.className !== "unavailable" && d.className !== "uncertain")
-        .map((d) => ({
-          class: d.actualClass || d.className,
-          confidence: d.confidence,
-          timestamp: d.timestamp,
-          lat: d.lat,
-          lon: d.lon,
-          image_base64: d.imageBase64 || null,
-          plant_zone_id: d.plantZoneId || null,
-        }));
+      const detectionsPayload = toSave.map((d) => ({
+        class: d.actualClass || d.className,
+        confidence: d.confidence,
+        timestamp: d.timestamp,
+        lat: d.lat,
+        lon: d.lon,
+        image_base64: d.imageBase64 || null,
+        plant_zone_id: d.plantZoneId || null,
+      }));
 
       const bulk = await api(`/api/scan/sessions/${sid}/detections`, {
         method: "POST",
@@ -3606,18 +3683,37 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
       });
 
       await api(`/api/scan/sessions/${sid}/complete`, { method: "POST" });
+      serverSessionIdRef.current = null;
+      setServerSessionId(null);
 
       setSubmitMessage(
-        `Report saved — ${bulk.saved_count} detection(s), ${bulk.flagged_count} flagged plant zone(s)`
+        `Report saved — ${bulk.flagged_count} plant zone(s) flagged, ${bulk.saved_count} image(s) stored`
       );
       if (onSubmitted) onSubmitted();
-      setTimeout(() => discardSession(), 1500);
+      setTimeout(() => {
+        sessionDetections.forEach((d) => {
+          if (d.thumbUrl) URL.revokeObjectURL(d.thumbUrl);
+        });
+        setSessionDetections([]);
+        setFramesAnalyzed(0);
+        setCurrent({ className: "", actualClass: "", confidence: 0, plantZoneId: null, confirming: false });
+        setSubmitMessage("");
+        setPhase("idle");
+        setError("");
+        setGpsStatus("off");
+      }, 1600);
     } catch (err) {
       setError(err.message);
     } finally {
       setSubmitting(false);
     }
   }
+
+  const gpsBadge =
+    gpsStatus === "on" ? <span className="live-gps-badge">GPS on</span>
+      : gpsStatus === "weak" ? <span className="live-gps-badge live-gps-weak">GPS weak</span>
+        : gpsStatus === "denied" ? <span className="live-gps-badge live-gps-denied">GPS off</span>
+          : null;
 
   if (phase === "summary") {
     return (
@@ -3631,25 +3727,29 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
 
         <div className="live-summary-stats card">
           <div className="live-summary-total">
-            <span className="live-summary-label">Total plants scanned</span>
-            <span className="live-summary-value">{plantsScanned}</span>
+            <span className="live-summary-label">Frames checked</span>
+            <span className="live-summary-value">{framesAnalyzed}</span>
+          </div>
+          <div className="live-summary-total" style={{ marginTop: 10 }}>
+            <span className="live-summary-label">Plant zones flagged</span>
+            <span className="live-summary-value">{issuesFound}</span>
           </div>
           <div className="live-summary-breakdown">
-            <div className="live-breakdown-item healthy">Healthy: {breakdown.healthy}</div>
-            <div className="live-breakdown-item bacterial">Bacterial: {breakdown.bacterial}</div>
-            <div className="live-breakdown-item septoria">Septoria: {breakdown.septoria}</div>
+            <div className="live-breakdown-item healthy">Healthy samples: {breakdown.healthy}</div>
+            <div className="live-breakdown-item bacterial">Bacterial zones: {breakdown.bacterial}</div>
+            <div className="live-breakdown-item septoria">Septoria zones: {breakdown.septoria}</div>
           </div>
         </div>
 
         <div className="card">
-          <div className="card-title">Flagged plants ({flaggedPlants.length})</div>
-          {flaggedPlants.length === 0 ? (
-            <p style={{ color: "var(--muted)" }}>No issues flagged in this session.</p>
+          <div className="card-title">Flagged plant zones ({flaggedZones.length})</div>
+          {flaggedZones.length === 0 ? (
+            <p style={{ color: "var(--muted)" }}>No confirmed disease zones in this session.</p>
           ) : (
             <ul className="live-flagged-list">
-              {flaggedPlants.map((d) => (
+              {flaggedZones.map((d) => (
                 <li className="live-flagged-item" key={d.id}>
-                  <img className="live-flagged-thumb" src={d.thumbUrl} alt="" />
+                  {d.thumbUrl ? <img className="live-flagged-thumb" src={d.thumbUrl} alt="" /> : null}
                   <div className="live-flagged-meta">
                     <div><ClassBadge cls={d.actualClass} /> <strong>{d.confidence.toFixed(1)}%</strong></div>
                     {d.plantZoneId && (
@@ -3657,7 +3757,7 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
                     )}
                     <div className="live-flagged-time">{new Date(d.timestamp).toLocaleString()}</div>
                     {d.lat != null && d.lon != null && (
-                      <div className="live-flagged-gps">📍 {d.lat.toFixed(5)}, {d.lon.toFixed(5)}</div>
+                      <div className="live-flagged-gps">{d.lat.toFixed(5)}, {d.lon.toFixed(5)}</div>
                     )}
                   </div>
                 </li>
@@ -3667,7 +3767,7 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
         </div>
 
         <div className="live-scan-actions">
-          <button className="btn btn-primary live-scan-btn" onClick={submitReport} disabled={submitting || !sessionDetections.length}>
+          <button className="btn btn-primary live-scan-btn" onClick={submitReport} disabled={submitting}>
             {submitting ? "Submitting…" : "Submit Report"}
           </button>
           <button className="btn btn-outline live-scan-btn" onClick={discardSession} disabled={submitting}>
@@ -3684,6 +3784,9 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
         <h2>Live Plant Scan</h2>
         <p>
           {selectedFarm?.name || "Select a farm"} · Manager: {managerName}
+        </p>
+        <p className="live-scan-hint">
+          Walk slowly along the row. Hold the leaf in the center of the camera — disease is confirmed after a few matching frames.
         </p>
         {farms.length > 0 && (
           <select className="live-scan-farm-select" value={farmId} onChange={(e) => onFarmChange(e.target.value)} disabled={phase === "scanning" || phase === "paused"}>
@@ -3703,8 +3806,8 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
       {(phase === "scanning" || phase === "paused") && (
         <>
           <div className="live-scan-counter">
-            Plants scanned: <strong>{plantsScanned}</strong> | Issues found: <strong>{issuesFound}</strong>
-            {gps && <span className="live-gps-badge">GPS on</span>}
+            Frames: <strong>{framesAnalyzed}</strong> | Zones flagged: <strong>{issuesFound}</strong>
+            {gpsBadge}
             {phase === "paused" && <span className="live-paused-badge">PAUSED</span>}
           </div>
 
@@ -3714,8 +3817,11 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
               <div className="live-detection-label">
                 {current.className
                   ? `${liveScanDisplayLabel(current.className, current.actualClass)} — ${current.confidence.toFixed(1)}%`
-                  : "Scanning…"}
+                  : "Point at a leaf…"}
               </div>
+              {current.confirming && (
+                <div className="live-confirming-label">Confirming… hold steady</div>
+              )}
               {current.plantZoneId && (
                 <div className="live-plant-zone-label">PLANT ZONE {current.plantZoneId}</div>
               )}

@@ -2,8 +2,8 @@
 Temporal smoothing and plant-zone IDs for Live Scan sessions.
 
 Keeps a short per-session prediction window in memory (no DB writes).
-Confirms disease when majority of recent frames are Bacterial/Septoria
-with average confidence >= threshold.
+Confirms disease only with a full window majority of Bacterial/Septoria
+and average confidence >= threshold.
 """
 
 from __future__ import annotations
@@ -24,9 +24,10 @@ from class_constants import PROBLEM_CLASSES, normalize_class
 
 WINDOW_SIZE = 3
 MIN_CONFIDENCE = 70.0
+# When GPS is unavailable, open a new zone after this idle gap
 ZONE_GAP_SECONDS = 8.0
-# ~5 meters movement starts a new plant zone (approx degrees)
-GPS_MOVE_DEG = 0.00005
+# ~5 meters of real movement starts a new plant zone
+GPS_MOVE_METERS = 5.0
 
 
 @dataclass
@@ -51,6 +52,20 @@ class _SessionState:
 _sessions: dict[int, _SessionState] = defaultdict(_SessionState)
 
 
+def _haversine_meters(
+    lat1: float,
+    lon1: float,
+    lat2: float,
+    lon2: float,
+) -> float:
+    r = 6371000.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlmb = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlmb / 2) ** 2
+    return 2 * r * math.asin(min(1.0, math.sqrt(a)))
+
+
 def _gps_moved(
     lat1: float | None,
     lon1: float | None,
@@ -59,7 +74,7 @@ def _gps_moved(
 ) -> bool:
     if lat1 is None or lon1 is None or lat2 is None or lon2 is None:
         return False
-    return math.hypot(lat2 - lat1, lon2 - lon1) >= GPS_MOVE_DEG
+    return _haversine_meters(lat1, lon1, lat2, lon2) >= GPS_MOVE_METERS
 
 
 def reset_session(session_id: int | None) -> None:
@@ -90,11 +105,11 @@ def update_prediction(
     now = time.time()
 
     if session_id is None:
-        is_problem = raw in PROBLEM_CLASSES and confidence >= MIN_CONFIDENCE
+        # No session: never auto-confirm (avoid single-frame false alerts)
         return {
             "smoothed_class": raw,
             "smoothed_confidence": confidence,
-            "is_confirmed_problem": is_problem,
+            "is_confirmed_problem": False,
             "plant_zone_id": None,
         }
 
@@ -111,7 +126,6 @@ def update_prediction(
     )
 
     frames = list(state.history)
-    # Majority class among window
     counts: dict[str, int] = {}
     conf_sum: dict[str, float] = {}
     for f in frames:
@@ -121,25 +135,34 @@ def update_prediction(
     smoothed_class = max(counts.items(), key=lambda x: (x[1], conf_sum[x[0]]))[0]
     smoothed_confidence = conf_sum[smoothed_class] / counts[smoothed_class]
 
+    # Require a full window and a strict majority (> half of frames)
+    full_window = len(frames) >= WINDOW_SIZE
+    majority = counts[smoothed_class] > (len(frames) / 2)
     is_confirmed = (
-        smoothed_class in PROBLEM_CLASSES
+        full_window
+        and majority
+        and smoothed_class in PROBLEM_CLASSES
         and smoothed_confidence >= MIN_CONFIDENCE
-        and counts[smoothed_class] >= max(1, (len(frames) + 1) // 2)
     )
 
     plant_zone_id = None
     if is_confirmed:
-        need_new_zone = (
-            state.last_zone_id is None
-            or (now - state.last_flag_ts) >= ZONE_GAP_SECONDS
-            or _gps_moved(state.last_flag_lat, state.last_flag_lon, latitude, longitude)
+        has_gps = latitude is not None and longitude is not None
+        moved = _gps_moved(state.last_flag_lat, state.last_flag_lon, latitude, longitude)
+        timed_out_no_gps = (
+            not has_gps
+            and state.last_zone_id is not None
+            and (now - state.last_flag_ts) >= ZONE_GAP_SECONDS
         )
+        need_new_zone = state.last_zone_id is None or moved or timed_out_no_gps
         if need_new_zone:
             state.zone_seq += 1
             state.last_zone_id = f"row-{sid}-{state.zone_seq}"
             state.last_flag_ts = now
             state.last_flag_lat = latitude
             state.last_flag_lon = longitude
+        else:
+            state.last_flag_ts = now
         plant_zone_id = state.last_zone_id
 
     return {

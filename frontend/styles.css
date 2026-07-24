@@ -2390,6 +2390,29 @@ tr:hover td { background: rgba(244, 247, 244, 0.6); }
   border-radius: 999px;
   padding: 2px 8px;
 }
+.live-gps-weak {
+  color: #92400e;
+  background: #fffbeb;
+}
+.live-gps-denied {
+  color: #991b1b;
+  background: #fef2f2;
+}
+.live-confirming-label {
+  margin-top: 4px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: #fef3c7;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+.live-scan-hint {
+  margin: 6px 0 12px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  max-width: 36rem;
+  line-height: 1.4;
+}
 .live-scan-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;

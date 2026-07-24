@@ -1,4 +1,5 @@
 import base64
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -41,8 +42,10 @@ SCAN_FLAGS_DIR = STORAGE_DIR / "scan_flags"
 ALERT_THRESHOLD = 70.0
 SKIP_CLASSES = {"uncertain", "unavailable"}
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_BULK_DETECTIONS = 200
 # Save every Nth healthy frame during bulk submit (problems always saved when imaged)
 HEALTHY_SAMPLE_EVERY = 5
+_ZONE_SAFE_RE = re.compile(r"[^A-Za-z0-9_\-]+")
 
 
 def _ensure_dirs():
@@ -80,6 +83,13 @@ def _decode_image_base64(data: str) -> bytes:
 
 def _normalize_class(cls: str) -> str:
     return normalize_class(cls)
+
+
+def _safe_zone_tag(plant_zone_id: str | None) -> str:
+    if not plant_zone_id:
+        return ""
+    cleaned = _ZONE_SAFE_RE.sub("-", plant_zone_id.strip())[:60]
+    return f"_{cleaned}" if cleaned else ""
 
 
 def _increment_session_counts(session: ScanSession, cls: str) -> None:
@@ -139,11 +149,18 @@ def _save_flagged_detection(
     longitude: float | None,
     timestamp: datetime,
     plant_zone_id: str | None = None,
-) -> Detection:
+    *,
+    create_alert: bool = True,
+) -> tuple[Detection, dict | None]:
+    """Persist one detection. Returns (detection, optional WhatsApp payload to send after commit)."""
     stamp = timestamp.strftime("%Y%m%d_%H%M%S_%f")
-    zone_tag = f"_{plant_zone_id}" if plant_zone_id else ""
-    flagged_path = SCAN_FLAGS_DIR / f"session{session.id}{zone_tag}_{predicted_class}_{stamp}.jpg"
-    flagged_path.write_bytes(image_bytes)
+    zone_tag = _safe_zone_tag(plant_zone_id)
+    safe_class = _ZONE_SAFE_RE.sub("-", predicted_class)[:40] or "class"
+    flagged_path = SCAN_FLAGS_DIR / f"session{session.id}{zone_tag}_{safe_class}_{stamp}.jpg"
+    try:
+        flagged_path.write_bytes(image_bytes)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="Could not store scan image") from exc
 
     detection = Detection(
         farm_id=farm.id,
@@ -159,8 +176,9 @@ def _save_flagged_detection(
     db.add(detection)
     db.flush()
 
+    whatsapp_payload = None
     canonical = normalize_class(predicted_class)
-    if is_problem(canonical) and confidence > ALERT_THRESHOLD:
+    if create_alert and is_problem(canonical) and confidence > ALERT_THRESHOLD:
         alert = Alert(
             farm_id=farm.id,
             detection_id=detection.id,
@@ -184,16 +202,16 @@ def _save_flagged_detection(
                 f"{zone}{loc}\n"
                 f"Action: Inspect this plant zone immediately"
             )
-            send_whatsapp_alert(
-                farm.name,
-                canonical,
-                confidence,
-                timestamp,
-                custom_body=body,
-                plant_zone_id=plant_zone_id,
-            )
+            whatsapp_payload = {
+                "farm_name": farm.name,
+                "class_name": canonical,
+                "confidence": confidence,
+                "timestamp": timestamp,
+                "custom_body": body,
+                "plant_zone_id": plant_zone_id,
+            }
 
-    return detection
+    return detection, whatsapp_payload
 
 
 def _save_detection_with_alert(
@@ -249,7 +267,16 @@ async def analyze_frame(
     user: User = Depends(require_roles("manager", "admin")),
 ):
     """Fast inference on a single live camera frame — no database writes."""
-    if farm_id is not None:
+    active_session_id = None
+    if session_id is not None:
+        session = _get_session_for_user(db, session_id, user)
+        if session.status != "active":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Session is not active")
+        if farm_id is not None and int(farm_id) != int(session.farm_id):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="farm_id does not match session")
+        get_farm_for_user(db, session.farm_id, user)
+        active_session_id = session.id
+    elif farm_id is not None:
         get_farm_for_user(db, farm_id, user)
 
     image_bytes = await _read_frame_upload(file)
@@ -260,7 +287,7 @@ async def analyze_frame(
     confidence = float(prediction.get("confidence", 0))
 
     smoothed = update_prediction(
-        session_id,
+        active_session_id,
         actual_class if pred_class not in SKIP_CLASSES else pred_class,
         confidence,
         latitude,
@@ -334,31 +361,48 @@ def bulk_save_session_detections(
     if session.status != "active":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Session is not active")
 
+    if len(payload.detections) > MAX_BULK_DETECTIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Too many detections. Maximum is {MAX_BULK_DETECTIONS}.",
+        )
+
     farm = db.query(Farm).filter(Farm.id == session.farm_id).first()
     saved_count = 0
     flagged_count = 0
     healthy_seen = 0
+    saved_problem_zones: set[str] = set()
+    pending_whatsapp: list[dict] = []
 
     for item in payload.detections:
         cls = _normalize_class(item.predicted_class)
         if cls in SKIP_CLASSES:
             continue
 
-        _increment_session_counts(session, cls)
+        zone_id = (item.plant_zone_id or "").strip() or None
+        if zone_id:
+            zone_id = _ZONE_SAFE_RE.sub("-", zone_id)[:80]
 
-        # Always persist problem frames with image; sample healthy frames
-        if is_healthy(cls):
+        # One saved problem detection per plant zone (best evidence first from client)
+        if is_problem(cls):
+            zone_key = zone_id or f"anon-{item.timestamp.isoformat()}"
+            if zone_key in saved_problem_zones:
+                continue
+            if item.confidence <= ALERT_THRESHOLD or not item.image_base64:
+                continue
+            saved_problem_zones.add(zone_key)
+        elif is_healthy(cls):
             healthy_seen += 1
             if healthy_seen % HEALTHY_SAMPLE_EVERY != 0 or not item.image_base64:
                 continue
             if item.confidence <= 0:
                 continue
         else:
-            if item.confidence <= ALERT_THRESHOLD or not item.image_base64:
-                continue
+            continue
 
+        _increment_session_counts(session, cls)
         image_bytes = _decode_image_base64(item.image_base64)
-        _save_flagged_detection(
+        _, whatsapp_payload = _save_flagged_detection(
             db,
             farm,
             session,
@@ -368,13 +412,27 @@ def bulk_save_session_detections(
             item.lat,
             item.lon,
             item.timestamp,
-            plant_zone_id=item.plant_zone_id,
+            plant_zone_id=zone_id,
+            create_alert=is_problem(cls),
         )
         saved_count += 1
         if is_problem(cls):
             flagged_count += 1
+        if whatsapp_payload:
+            pending_whatsapp.append(whatsapp_payload)
 
     db.commit()
+
+    for msg in pending_whatsapp:
+        send_whatsapp_alert(
+            msg["farm_name"],
+            msg["class_name"],
+            msg["confidence"],
+            msg["timestamp"],
+            custom_body=msg["custom_body"],
+            plant_zone_id=msg.get("plant_zone_id"),
+        )
+
     return ScanBulkDetectionsOut(saved_count=saved_count, flagged_count=flagged_count)
 
 
@@ -397,6 +455,25 @@ def complete_scan_session(
 
     reset_session(session_id)
     notify_scan_session_completed(db, session, farm)
+    return _session_to_summary(db, session)
+
+
+@router.post("/sessions/{session_id}/cancel", response_model=ScanSessionSummaryOut)
+def cancel_scan_session(
+    session_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Cancel an active walk-through without sending completion reports."""
+    session = _get_session_for_user(db, session_id, user)
+    if session.status != "active":
+        return _session_to_summary(db, session)
+
+    session.status = "cancelled"
+    session.completed_at = datetime.utcnow()
+    db.commit()
+    db.refresh(session)
+    reset_session(session_id)
     return _session_to_summary(db, session)
 
 
