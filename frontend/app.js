@@ -3308,7 +3308,11 @@ const LIVE_SCAN_TIPS = [
   "Use daylight or torch; avoid heavy shadow and glare.",
   "Hold steady for 2–3 seconds so the AI can confirm disease.",
   "Walk slowly. Tap Next plant when you move to another plant without clear GPS.",
+  "Not on the farm? Upload a phone video of the row — same AI checks every 2 seconds.",
 ];
+
+const LIVE_SCAN_VIDEO_ACCEPT = "video/mp4,video/webm,video/quicktime,video/*";
+const LIVE_SCAN_MAX_VIDEO_BYTES = 300 * 1024 * 1024; // 300 MB
 
 function liveScanBorderClass(predClass, actualClass) {
   const c = actualClass || predClass;
@@ -3402,10 +3406,14 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
   const [torchSupported, setTorchSupported] = useState(false);
   const [netStatus, setNetStatus] = useState(navigator.onLine ? "online" : "offline");
   const [analyzing, setAnalyzing] = useState(false);
+  const [scanSource, setScanSource] = useState("camera"); // camera | video
+  const [videoFileName, setVideoFileName] = useState("");
 
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
+  const videoUrlRef = useRef(null);
+  const videoInputRef = useRef(null);
   const processingRef = useRef(false);
   const intervalRef = useRef(null);
   const gpsRef = useRef(null);
@@ -3417,6 +3425,7 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
   const startingRef = useRef(false);
   const facingModeRef = useRef("environment");
   const alertedZonesRef = useRef(new Set());
+  const scanSourceRef = useRef("camera");
 
   const selectedFarm = farms.find((f) => String(f.id) === String(farmId));
   const managerName = user?.role === "manager"
@@ -3440,6 +3449,7 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
   useEffect(() => { farmIdRef.current = farmId; }, [farmId]);
   useEffect(() => { serverSessionIdRef.current = serverSessionId; }, [serverSessionId]);
   useEffect(() => { facingModeRef.current = facingMode; }, [facingMode]);
+  useEffect(() => { scanSourceRef.current = scanSource; }, [scanSource]);
 
   useEffect(() => {
     const on = () => setNetStatus("online");
@@ -3475,8 +3485,16 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     }
+    if (videoUrlRef.current) {
+      URL.revokeObjectURL(videoUrlRef.current);
+      videoUrlRef.current = null;
+    }
     if (videoRef.current) {
+      try { videoRef.current.pause(); } catch { /* ignore */ }
+      videoRef.current.removeAttribute("src");
       videoRef.current.srcObject = null;
+      try { videoRef.current.load(); } catch { /* ignore */ }
+      videoRef.current.onended = null;
     }
   }, [stopCaptureLoop, stopGpsWatch]);
 
@@ -3683,6 +3701,31 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
     return () => stopCaptureLoop();
   }, [phase, analyzeFrame, stopCaptureLoop]);
 
+  // Re-attach uploaded video after the scanning player mounts (idle → scanning remounts <video>)
+  useEffect(() => {
+    if (phase !== "scanning" && phase !== "paused") return undefined;
+    if (scanSource !== "video" || !videoUrlRef.current || !videoRef.current) return undefined;
+    const video = videoRef.current;
+    if (video.getAttribute("src") !== videoUrlRef.current) {
+      video.srcObject = null;
+      video.src = videoUrlRef.current;
+      video.muted = true;
+      video.playsInline = true;
+      video.loop = false;
+      video.onended = () => {
+        if (phaseRef.current === "scanning" || phaseRef.current === "paused") {
+          stopCaptureLoop();
+          try { video.pause(); } catch { /* ignore */ }
+          setPhase("summary");
+        }
+      };
+      if (phase === "scanning") {
+        video.play().catch(() => {});
+      }
+    }
+    return undefined;
+  }, [phase, scanSource, stopCaptureLoop]);
+
   async function startScan() {
     if (!farmId || startingRef.current) {
       if (!farmId) setError("Select a farm first");
@@ -3701,6 +3744,9 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
     serverSessionIdRef.current = null;
     setGps(null);
     gpsRef.current = null;
+    setScanSource("camera");
+    scanSourceRef.current = "camera";
+    setVideoFileName("");
     setGpsStatus(navigator.geolocation ? "weak" : "off");
     setFacingMode("environment");
     facingModeRef.current = "environment";
@@ -3755,18 +3801,111 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
     }
   }
 
+  async function startVideoScan(file) {
+    if (!farmId || startingRef.current) {
+      if (!farmId) setError("Select a farm first");
+      return;
+    }
+    if (!file) return;
+    if (file.size > LIVE_SCAN_MAX_VIDEO_BYTES) {
+      setError("Video is too large (max 300 MB). Trim or compress the clip first.");
+      return;
+    }
+    if (file.type && !String(file.type).startsWith("video/")) {
+      setError("Please choose a video file (MP4, WebM, or MOV).");
+      return;
+    }
+
+    startingRef.current = true;
+    stopCamera();
+    setError("");
+    setSubmitMessage("");
+    setSessionDetections([]);
+    setRecentFrames([]);
+    setFramesAnalyzed(0);
+    healthySampleRef.current = 0;
+    alertedZonesRef.current = new Set();
+    setCurrent({ className: "", actualClass: "", confidence: 0, plantZoneId: null, confirming: false, isIssue: false });
+    setServerSessionId(null);
+    serverSessionIdRef.current = null;
+    setGps(null);
+    gpsRef.current = null;
+    setScanSource("video");
+    scanSourceRef.current = "video";
+    setVideoFileName(file.name || "uploaded-video");
+    setGpsStatus("off");
+    setTorchSupported(false);
+
+    let createdId = null;
+    try {
+      const created = await api("/api/scan/sessions", {
+        method: "POST",
+        body: JSON.stringify({ farm_id: Number(farmId) }),
+      });
+      createdId = created.session_id;
+      setServerSessionId(createdId);
+      serverSessionIdRef.current = createdId;
+    } catch (err) {
+      setError(err.message || "Could not start scan session");
+      startingRef.current = false;
+      return;
+    }
+
+    try {
+      const url = URL.createObjectURL(file);
+      videoUrlRef.current = url;
+      setPhase("scanning");
+    } catch (err) {
+      await cancelServerSession(createdId);
+      setServerSessionId(null);
+      serverSessionIdRef.current = null;
+      stopCamera();
+      setError(err.message || "Could not open this video. Try MP4 (H.264).");
+      setPhase("idle");
+      setScanSource("camera");
+      scanSourceRef.current = "camera";
+      setVideoFileName("");
+    } finally {
+      startingRef.current = false;
+      if (videoInputRef.current) videoInputRef.current.value = "";
+    }
+  }
+
+  function onVideoFilePicked(e) {
+    const file = e.target.files && e.target.files[0];
+    if (file) startVideoScan(file);
+  }
+
   function pauseScan() {
-    if (phase === "scanning") setPhase("paused");
-    else if (phase === "paused") setPhase("scanning");
+    if (phase === "scanning") {
+      setPhase("paused");
+      if (scanSourceRef.current === "video" && videoRef.current) {
+        try { videoRef.current.pause(); } catch { /* ignore */ }
+      }
+    } else if (phase === "paused") {
+      setPhase("scanning");
+      if (scanSourceRef.current === "video" && videoRef.current) {
+        videoRef.current.play().catch(() => {});
+      }
+    }
   }
 
   function endScan() {
-    if (!window.confirm("End this row scan and review the summary?")) return;
-    stopCamera();
+    if (!window.confirm("End this scan and review the summary?")) return;
+    if (scanSourceRef.current === "video" && videoRef.current) {
+      try { videoRef.current.pause(); } catch { /* ignore */ }
+    }
+    stopCaptureLoop();
+    stopGpsWatch();
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
     setPhase("summary");
   }
 
   async function switchCamera() {
+    if (scanSourceRef.current === "video") return;
     const next = facingModeRef.current === "environment" ? "user" : "environment";
     const wasScanning = phaseRef.current === "scanning";
     if (wasScanning) setPhase("paused");
@@ -3782,6 +3921,7 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
   }
 
   async function toggleTorch() {
+    if (scanSourceRef.current === "video") return;
     const track = streamRef.current?.getVideoTracks?.()[0];
     if (!track) return;
     const next = !torchOn;
@@ -3826,6 +3966,9 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
     setPhase("idle");
     setError("");
     setGpsStatus("off");
+    setScanSource("camera");
+    scanSourceRef.current = "camera";
+    setVideoFileName("");
     stopCamera();
     await cancelServerSession(sid);
   }
@@ -3883,6 +4026,9 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
         setPhase("idle");
         setError("");
         setGpsStatus("off");
+        setScanSource("camera");
+        scanSourceRef.current = "camera";
+        setVideoFileName("");
       }, 1600);
     } catch (err) {
       setError(err.message);
@@ -3912,7 +4058,7 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
       <div className="live-scan-page fade-in">
         <div className="live-scan-header">
           <h2>Scan Session Summary</h2>
-          <p>{selectedFarm?.name || "Farm"} · {managerName}{serverSessionId != null ? ` · Session #${serverSessionId}` : ""}</p>
+          <p>{selectedFarm?.name || "Farm"} · {managerName}{serverSessionId != null ? ` · Session #${serverSessionId}` : ""}{videoFileName ? ` · Video: ${videoFileName}` : ""}</p>
         </div>
         <ErrorBox message={error} />
         {submitMessage && <div className="alert-success">{submitMessage}</div>}
@@ -3997,9 +4143,28 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
               ))}
             </ol>
           </div>
-          <button className="btn btn-primary live-scan-start-btn" onClick={startScan} disabled={!farmId}>
-            Start Row Scan
-          </button>
+          <div className="live-start-actions">
+            <button className="btn btn-primary live-scan-start-btn" onClick={startScan} disabled={!farmId}>
+              Start Row Scan
+            </button>
+            <button
+              className="btn btn-outline live-scan-upload-btn"
+              onClick={() => videoInputRef.current && videoInputRef.current.click()}
+              disabled={!farmId}
+            >
+              Upload Video
+            </button>
+            <input
+              ref={videoInputRef}
+              type="file"
+              accept={LIVE_SCAN_VIDEO_ACCEPT}
+              style={{ display: "none" }}
+              onChange={onVideoFilePicked}
+            />
+            <p className="live-upload-hint">
+              Use a phone recording of the plantation when you are not on the farm. Same AI checks every 2 seconds — tap <strong>Next plant</strong> between plants (no GPS in uploaded video).
+            </p>
+          </div>
         </>
       )}
 
@@ -4007,6 +4172,9 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
         <>
           <div className="live-scan-counter">
             Frames: <strong>{framesAnalyzed}</strong> | Zones flagged: <strong>{issuesFound}</strong>
+            {scanSource === "video" && (
+              <span className="live-video-badge" title={videoFileName}>Video</span>
+            )}
             {gpsBadge}
             {netBadge}
             {analyzing && <span className="live-analyzing-badge">AI…</span>}
@@ -4017,14 +4185,16 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
             <video ref={videoRef} className="live-video" playsInline muted autoPlay />
             <div className="live-leaf-guide" aria-hidden="true">
               <div className="live-leaf-guide-box" />
-              <div className="live-leaf-guide-caption">Center leaf here</div>
+              <div className="live-leaf-guide-caption">
+                {scanSource === "video" ? "AI reading video frames" : "Center leaf here"}
+              </div>
             </div>
             <div className="live-video-overlay">
               <div className="live-overlay-stack">
                 <div className="live-detection-label">
                   {current.className
                     ? `${liveScanDisplayLabel(current.className, current.actualClass)} — ${current.confidence.toFixed(1)}%`
-                    : "Point at a leaf…"}
+                    : (scanSource === "video" ? "Reading video…" : "Point at a leaf…")}
                 </div>
                 <div className={`live-conf-meter live-conf-${confTone}`}>
                   <div className="live-conf-fill" style={{ width: `${Math.max(4, Math.min(100, current.confidence || 0))}%` }} />
@@ -4058,19 +4228,23 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
             </div>
           )}
 
-          <div className="live-tool-row live-tool-row-3">
-            <button type="button" className="btn btn-outline live-tool-btn" onClick={switchCamera}>
-              Flip camera
-            </button>
-            <button
-              type="button"
-              className="btn btn-outline live-tool-btn"
-              onClick={toggleTorch}
-              disabled={!torchSupported}
-              title={torchSupported ? "Toggle torch" : "Torch not available"}
-            >
-              {torchOn ? "Torch off" : "Torch on"}
-            </button>
+          <div className={`live-tool-row ${scanSource === "video" ? "" : "live-tool-row-3"}`}>
+            {scanSource !== "video" && (
+              <>
+                <button type="button" className="btn btn-outline live-tool-btn" onClick={switchCamera}>
+                  Flip camera
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-outline live-tool-btn"
+                  onClick={toggleTorch}
+                  disabled={!torchSupported}
+                  title={torchSupported ? "Toggle torch" : "Torch not available"}
+                >
+                  {torchOn ? "Torch off" : "Torch on"}
+                </button>
+              </>
+            )}
             <button
               type="button"
               className="btn btn-outline live-tool-btn"
