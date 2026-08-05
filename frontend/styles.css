@@ -447,9 +447,41 @@ body {
   color: #fff;
   position: relative;
   overflow: hidden;
-  transition: transform var(--transition);
+  transition: transform var(--transition), box-shadow var(--transition);
 }
 .stat-card:hover { transform: translateY(-2px); }
+.stat-card-btn {
+  display: block;
+  width: 100%;
+  border: none;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.stat-card-btn:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.18);
+}
+.stat-card-btn:focus-visible {
+  outline: 3px solid rgba(255, 255, 255, 0.85);
+  outline-offset: 3px;
+}
+.stat-card-btn:active {
+  transform: translateY(-1px);
+}
+.stat-card-hint {
+  display: block;
+  margin-top: 10px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  opacity: 0.88;
+  letter-spacing: 0.02em;
+}
+@media (max-width: 768px) {
+  .stat-card-hint { font-size: 0.72rem; }
+}
 .stat-card::after {
   content: "";
   position: absolute;

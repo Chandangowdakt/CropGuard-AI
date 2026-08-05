@@ -387,7 +387,7 @@ function AuthPage({ onSuccess }) {
 }
 
 // ── Dashboard sections ────────────────────────────────────────────────────────
-function StatsRow({ farms, detectionsToday, activeAlerts, healthScore, loading }) {
+function StatsRow({ farms, detectionsToday, activeAlerts, healthScore, loading, onNavigate }) {
   if (loading) {
     return (
       <div className="stats-row fade-in">
@@ -398,28 +398,57 @@ function StatsRow({ farms, detectionsToday, activeAlerts, healthScore, loading }
       </div>
     );
   }
+
+  const go = (view) => {
+    if (typeof onNavigate === "function") onNavigate(view);
+  };
+
   return (
     <div className="stats-row fade-in">
-      <div className="stat-card stat-green">
+      <button
+        type="button"
+        className="stat-card stat-green stat-card-btn"
+        onClick={() => go("farms")}
+        aria-label="Open My Farms"
+      >
         <div className="stat-icon">🏡</div>
         <h4>Total Farms</h4>
         <div className="stat-value">{farms}</div>
-      </div>
-      <div className="stat-card stat-blue">
+        <span className="stat-card-hint">View farms →</span>
+      </button>
+      <button
+        type="button"
+        className="stat-card stat-blue stat-card-btn"
+        onClick={() => go("analysis")}
+        aria-label="Open Analysis"
+      >
         <div className="stat-icon">📷</div>
         <h4>Detections Today</h4>
         <div className="stat-value">{detectionsToday}</div>
-      </div>
-      <div className="stat-card stat-red">
+        <span className="stat-card-hint">Open analysis →</span>
+      </button>
+      <button
+        type="button"
+        className="stat-card stat-red stat-card-btn"
+        onClick={() => go("alerts")}
+        aria-label="Open Alerts"
+      >
         <div className="stat-icon">🔔</div>
         <h4>Active Alerts</h4>
         <div className="stat-value">{activeAlerts}</div>
-      </div>
-      <div className="stat-card stat-gold">
+        <span className="stat-card-hint">View alerts →</span>
+      </button>
+      <button
+        type="button"
+        className="stat-card stat-gold stat-card-btn"
+        onClick={() => go("reports")}
+        aria-label="Open Reports"
+      >
         <div className="stat-icon">💚</div>
         <h4>Health Score</h4>
         <div className="stat-value">{healthScore}%</div>
-      </div>
+        <span className="stat-card-hint">Open reports →</span>
+      </button>
     </div>
   );
 }
@@ -4534,6 +4563,11 @@ function DashboardApp({ user, onLogout }) {
           activeAlerts={unreadAlerts}
           healthScore={healthScore}
           loading={loading}
+          onNavigate={(nextView) => {
+            setDetailFarmId(null);
+            setSidebarOpen(false);
+            setView(nextView);
+          }}
         />
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 20 }}>
           <HealthChart summary={summary} loading={loading} />
