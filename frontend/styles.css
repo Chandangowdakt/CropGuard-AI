@@ -2293,6 +2293,12 @@ tr:hover td { background: rgba(244, 247, 244, 0.6); }
   border-radius: 6px;
   padding: 2px 8px;
 }
+.live-video-time {
+  margin-left: 8px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--muted);
+}
 .live-scan-counter {
   text-align: center;
   font-size: 0.95rem;

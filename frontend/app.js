@@ -3325,6 +3325,8 @@ function ReportsPage({ farms, farmId, onFarmChange }) {
 // ── Live Scan page ────────────────────────────────────────────────────────────
 const LIVE_SCAN_INTERVAL_MS = 2000;
 const LIVE_SCAN_HEALTHY_SAMPLE_EVERY = 5;
+/** For uploaded video: advance this many seconds after each AI frame (seek-step). */
+const LIVE_SCAN_VIDEO_STEP_SEC = 1.5;
 
 const LIVE_SCAN_ADVICE = {
   Healthy: "Leaf looks healthy — keep walking the row.",
@@ -3337,7 +3339,7 @@ const LIVE_SCAN_TIPS = [
   "Use daylight or torch; avoid heavy shadow and glare.",
   "Hold steady for 2–3 seconds so the AI can confirm disease.",
   "Walk slowly. Tap Next plant when you move to another plant without clear GPS.",
-  "Not on the farm? Upload a phone video of the row — same AI checks every 2 seconds.",
+  "Not on the farm? Upload a phone video — AI steps through it frame-by-frame (video waits for each check).",
 ];
 
 const LIVE_SCAN_VIDEO_ACCEPT = "video/mp4,video/webm,video/quicktime,video/*";
@@ -3393,6 +3395,67 @@ function blobToBase64(blob) {
   });
 }
 
+function seekVideoElement(video, timeSec) {
+  return new Promise((resolve) => {
+    if (!video) {
+      resolve(false);
+      return;
+    }
+    const duration = Number(video.duration);
+    const target = Number.isFinite(duration)
+      ? Math.min(Math.max(0, timeSec), Math.max(0, duration - 0.05))
+      : Math.max(0, timeSec);
+
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      video.removeEventListener("seeked", onSeeked);
+      video.removeEventListener("error", onError);
+      resolve(ok);
+    };
+    const onSeeked = () => finish(true);
+    const onError = () => finish(false);
+
+    try { video.pause(); } catch { /* ignore */ }
+    video.addEventListener("seeked", onSeeked);
+    video.addEventListener("error", onError);
+    try {
+      video.currentTime = target;
+    } catch {
+      finish(false);
+      return;
+    }
+    // Some browsers fire seeked sync; others need a timeout fallback
+    setTimeout(() => finish(true), 1200);
+  });
+}
+
+function waitForVideoReady(video, timeoutMs = 4000) {
+  return new Promise((resolve) => {
+    if (!video) {
+      resolve(false);
+      return;
+    }
+    if (video.readyState >= 2) {
+      resolve(true);
+      return;
+    }
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      video.removeEventListener("loadeddata", onReady);
+      video.removeEventListener("canplay", onReady);
+      resolve(ok);
+    };
+    const onReady = () => finish(true);
+    video.addEventListener("loadeddata", onReady);
+    video.addEventListener("canplay", onReady);
+    setTimeout(() => finish(video.readyState >= 2), timeoutMs);
+  });
+}
+
 function notifyLiveScanAlert() {
   try {
     if (navigator.vibrate) navigator.vibrate([80, 40, 120]);
@@ -3437,6 +3500,7 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
   const [analyzing, setAnalyzing] = useState(false);
   const [scanSource, setScanSource] = useState("camera"); // camera | video
   const [videoFileName, setVideoFileName] = useState("");
+  const [videoProgress, setVideoProgress] = useState({ current: 0, duration: 0 });
 
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -3445,6 +3509,7 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
   const videoInputRef = useRef(null);
   const processingRef = useRef(false);
   const intervalRef = useRef(null);
+  const videoLoopCancelRef = useRef(false);
   const gpsRef = useRef(null);
   const gpsWatchRef = useRef(null);
   const phaseRef = useRef("idle");
@@ -3503,6 +3568,7 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
     }
+    videoLoopCancelRef.current = true;
   }, []);
 
   const stopCamera = useCallback(() => {
@@ -3720,15 +3786,68 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
     }
   }, []);
 
+  // Camera: timed interval. Uploaded video: seek-step (pause → analyze → seek) so AI stays in sync.
   useEffect(() => {
     stopCaptureLoop();
     if (phase !== "scanning") return undefined;
+
+    if (scanSourceRef.current === "video") {
+      videoLoopCancelRef.current = false;
+      let cancelled = false;
+
+      (async () => {
+        const video = videoRef.current;
+        if (!video) return;
+        try { video.pause(); } catch { /* ignore */ }
+        await waitForVideoReady(video);
+        if (cancelled || videoLoopCancelRef.current || phaseRef.current !== "scanning") return;
+
+        while (!cancelled && !videoLoopCancelRef.current && phaseRef.current === "scanning" && scanSourceRef.current === "video") {
+          const v = videoRef.current;
+          if (!v) break;
+          try { v.pause(); } catch { /* ignore */ }
+
+          if (v.readyState < 2) {
+            await new Promise((r) => setTimeout(r, 250));
+            continue;
+          }
+
+          const duration = Number(v.duration);
+          setVideoProgress({
+            current: Number(v.currentTime) || 0,
+            duration: Number.isFinite(duration) ? duration : 0,
+          });
+
+          await analyzeFrame();
+          if (cancelled || videoLoopCancelRef.current || phaseRef.current !== "scanning") break;
+
+          const dur = Number(v.duration);
+          const cur = Number(v.currentTime) || 0;
+          if (!Number.isFinite(dur) || dur <= 0) {
+            await new Promise((r) => setTimeout(r, 300));
+            continue;
+          }
+          if (cur + LIVE_SCAN_VIDEO_STEP_SEC >= dur - 0.08) {
+            setVideoProgress({ current: dur, duration: dur });
+            setPhase("summary");
+            break;
+          }
+          await seekVideoElement(v, cur + LIVE_SCAN_VIDEO_STEP_SEC);
+        }
+      })();
+
+      return () => {
+        cancelled = true;
+        videoLoopCancelRef.current = true;
+      };
+    }
+
     analyzeFrame();
     intervalRef.current = setInterval(() => {
       analyzeFrame();
     }, LIVE_SCAN_INTERVAL_MS);
     return () => stopCaptureLoop();
-  }, [phase, analyzeFrame, stopCaptureLoop]);
+  }, [phase, scanSource, analyzeFrame, stopCaptureLoop]);
 
   // Re-attach uploaded video after the scanning player mounts (idle → scanning remounts <video>)
   useEffect(() => {
@@ -3741,19 +3860,13 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
       video.muted = true;
       video.playsInline = true;
       video.loop = false;
-      video.onended = () => {
-        if (phaseRef.current === "scanning" || phaseRef.current === "paused") {
-          stopCaptureLoop();
-          try { video.pause(); } catch { /* ignore */ }
-          setPhase("summary");
-        }
-      };
-      if (phase === "scanning") {
-        video.play().catch(() => {});
-      }
+      video.preload = "auto";
+      try { video.pause(); } catch { /* ignore */ }
+      // Seek-step mode: do not free-play. Start at beginning for a fresh upload attach.
+      try { video.currentTime = 0; } catch { /* ignore */ }
     }
     return undefined;
-  }, [phase, scanSource, stopCaptureLoop]);
+  }, [phase, scanSource]);
 
   async function startScan() {
     if (!farmId || startingRef.current) {
@@ -3862,6 +3975,7 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
     setScanSource("video");
     scanSourceRef.current = "video";
     setVideoFileName(file.name || "uploaded-video");
+    setVideoProgress({ current: 0, duration: 0 });
     setGpsStatus("off");
     setTorchSupported(false);
 
@@ -3912,10 +4026,8 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
         try { videoRef.current.pause(); } catch { /* ignore */ }
       }
     } else if (phase === "paused") {
+      // Resume seek-step / camera interval from current position (do not free-play uploaded video)
       setPhase("scanning");
-      if (scanSourceRef.current === "video" && videoRef.current) {
-        videoRef.current.play().catch(() => {});
-      }
     }
   }
 
@@ -4191,7 +4303,8 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
               onChange={onVideoFilePicked}
             />
             <p className="live-upload-hint">
-              Use a phone recording of the plantation when you are not on the farm. Same AI checks every 2 seconds — tap <strong>Next plant</strong> between plants (no GPS in uploaded video).
+              Upload a plantation video when you are not on the farm. AI <strong>steps through</strong> the clip
+              (pauses for each check, then jumps ~1.5s ahead) so frames stay aligned — use <strong>Next plant</strong> between plants.
             </p>
           </div>
         </>
@@ -4202,7 +4315,12 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
           <div className="live-scan-counter">
             Frames: <strong>{framesAnalyzed}</strong> | Zones flagged: <strong>{issuesFound}</strong>
             {scanSource === "video" && (
-              <span className="live-video-badge" title={videoFileName}>Video</span>
+              <span className="live-video-badge" title={videoFileName}>Video step</span>
+            )}
+            {scanSource === "video" && videoProgress.duration > 0 && (
+              <span className="live-video-time">
+                {Math.floor(videoProgress.current)}s / {Math.floor(videoProgress.duration)}s
+              </span>
             )}
             {gpsBadge}
             {netBadge}
@@ -4211,11 +4329,13 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
           </div>
 
           <div className={`live-video-wrap ${liveScanBorderClass(current.className, current.actualClass)}`}>
-            <video ref={videoRef} className="live-video" playsInline muted autoPlay />
+            <video ref={videoRef} className="live-video" playsInline muted />
             <div className="live-leaf-guide" aria-hidden="true">
               <div className="live-leaf-guide-box" />
               <div className="live-leaf-guide-caption">
-                {scanSource === "video" ? "AI reading video frames" : "Center leaf here"}
+                {scanSource === "video"
+                  ? (analyzing ? "AI reading this frame…" : "Stepping through video")
+                  : "Center leaf here"}
               </div>
             </div>
             <div className="live-video-overlay">
@@ -4223,7 +4343,7 @@ function LiveScanPage({ farms, farmId, onFarmChange, user, onSubmitted }) {
                 <div className="live-detection-label">
                   {current.className
                     ? `${liveScanDisplayLabel(current.className, current.actualClass)} — ${current.confidence.toFixed(1)}%`
-                    : (scanSource === "video" ? "Reading video…" : "Point at a leaf…")}
+                    : (scanSource === "video" ? "Stepping through video…" : "Point at a leaf…")}
                 </div>
                 <div className={`live-conf-meter live-conf-${confTone}`}>
                   <div className="live-conf-fill" style={{ width: `${Math.max(4, Math.min(100, current.confidence || 0))}%` }} />
