@@ -1,344 +1,410 @@
 # CropGuard AI
 
-**AI-powered plantation monitoring platform for Indian farmers.**
+AI-powered chrysanthemum plantation monitoring for farmers, field managers, and platform admins.
 
-CropGuard AI is a full-stack SaaS dashboard that wraps your chrysanthemum disease-detection model in a production-ready web application: FastAPI backend, SQLite database, JWT authentication, role-based access (farmer / manager / admin), and a React 18 single-page frontend served from CDN.
+CropGuard wraps a **3-class leaf disease model** (Bacterial / Healthy / Septoria) in a production web app: FastAPI backend, SQLite, JWT auth with roles, and a React 18 SPA (no npm build). Farmers can upload leaf photos, walk rows with a live camera, or analyze an uploaded video. Confirmed disease can create alerts and optional WhatsApp/email reports.
+
+This README is for a new engineer with zero prior context.
 
 ---
 
-## Features
+## Live deployment
 
-| Area | Capabilities |
-|------|----------------|
-| **Authentication** | Register, login, JWT sessions (7-day tokens), farmer / manager / admin roles |
-| **Farmer Dashboard** | Stats, health chart, recent alerts, quick photo analysis |
-| **My Farms** | Farm cards, add farm modal, farm detail page with detection history |
-| **Plant Analysis** | Drag-and-drop upload, AI preview, save to farm, analysis history |
-| **Alerts** | Filterable alert cards, notification bell, mark read, image modal |
-| **Reports** | Date-range farm health reports, HTML export, quick week/month reports |
-| **Admin** | Platform stats, all farms/users tables, 7-day trends, live activity feed |
-| **AI Engine** | MobileNetV2 — healthy, diseased, pest_affected, water_stressed |
+| Surface | URL |
+|---------|-----|
+| **Frontend (GitHub Pages)** | https://chandangowdakt.github.io/CropGuard-AI/ |
+| **Backend API (Render)** | https://cropguard-ai-backend.onrender.com |
+| **API docs (when backend is awake)** | https://cropguard-ai-backend.onrender.com/docs |
+| **Health check** | https://cropguard-ai-backend.onrender.com/api/health |
+| **GitHub repo** | https://github.com/Chandangowdakt/CropGuard-AI |
+
+Demo logins (seeded on empty databases):
+
+| Email | Password | Role |
+|-------|----------|------|
+| `admin@cropguard.ai` | `admin123` | admin — Platform Admin |
+| `farmer@cropguard.ai` | `farmer123` | farmer |
+| `manager@cropguard.ai` | `manager123` | manager — scan sessions |
+
+Render’s free tier **spins down** after idle time. The first request after sleep can take 30–60 seconds. If `/api/health` shows `"torch_available": false`, predictions return “uncertain / model unavailable” until PyTorch is installed (Docker image on Render includes CPU torch).
+
+---
+
+## What the product does
+
+1. **Authenticate** — register/login; JWT stored in `localStorage`; roles: `farmer`, `manager`, `admin`.
+2. **Manage farms** — CRUD, weather widget (Open-Meteo, no API key), farm-level stats.
+3. **Analysis** — upload one or many leaf photos → classify → optionally save to a farm (creates alerts when Bacterial/Septoria and confidence is high).
+4. **Leaf Scan** — dedicated close-up leaf UI (`/api/detections/analyze-leaf`).
+5. **Live Scan** — phone camera or **uploaded video**; frames go to `/api/scan/analyze-frame` every ~2s (camera) or seek-step ~1.5s (video). Disease is confirmed only after a 3-frame majority at ≥70% confidence. GPS + `plant_zone_id` tag affected plants. End scan → bulk save + complete session (email/WhatsApp).
+6. **Alerts / Reports / Admin** — unread bell, HTML reports, scan-session overview, manager-farm assignments.
+
+**Not in this repo:** training scripts. Weights live under `backend/models/`. Training historically lived in a sibling “ai engine” folder; CropGuard only **loads** checkpoints.
+
+---
+
+## Tech stack
+
+### Backend
+
+| Piece | Choice |
+|-------|--------|
+| Runtime | Python 3.11 recommended (Render Docker). Local 3.12–3.14 can work; torch wheels may fail on 3.14. |
+| API | FastAPI + Uvicorn |
+| Validation | Pydantic v2 |
+| ORM / DB | SQLAlchemy 2 + **SQLite** (`backend/cropguard.db`; on Render: `/tmp/cropguard.db`) |
+| Auth | JWT (`python-jose`), bcrypt (`passlib` + native `bcrypt` fallback) |
+| Images | Pillow |
+| Model | PyTorch MobileNetV2, CPU. **Not** in `requirements.txt` — install separately locally; Docker `build.sh` installs CPU torch 2.4.1 |
+| Weather | Open-Meteo HTTP (cached 60 minutes) |
+| Alerts | Optional Twilio WhatsApp + SMTP email |
+
+### Frontend
+
+| Piece | Choice |
+|-------|--------|
+| UI | React 18 (UMD from unpkg) |
+| JSX | Babel standalone — `index.html` fetches `app.js` and transforms it in the browser |
+| Styling | Single `styles.css` (no Tailwind/build step) |
+| Package manager | **None.** No `package.json`, no webpack, no Vite |
+| API base | `localhost` → `http://localhost:8001`; otherwise `https://cropguard-ai-backend.onrender.com` |
+
+**Important:** `frontend/app.js` must **not** use ES module `import`/`export` at line start. Babel classic runtime + `<script>` injection cannot load modules.
+
+### Deploy
+
+- Frontend: GitHub Actions → `gh-pages` branch from `./frontend` (`.github/workflows/deploy.yml`).
+- Backend: Render **Docker** (`backend/Dockerfile`, root `render.yaml`).
+
+---
+
+## Architecture (high level)
+
+```
+Browser (GitHub Pages or localhost:5500)
+    │  JWT Bearer
+    ▼
+FastAPI (localhost:8001 or Render)
+    ├── /api/auth, /api/farms, /api/detections, /api/alerts, /api/admin
+    ├── /api/scan  (live/video walk — analyze-frame has no DB write)
+    ├── ai_engine.py     → chrysanthemum_leaf_model.pth  (3-class, primary)
+    ├── leaf_engine.py   → same leaf weights for Leaf Scan page
+    └── SQLite + storage/uploads, storage/flagged, storage/scan_flags
+```
+
+Live Scan flow:
+
+1. `POST /api/scan/sessions` — create session  
+2. `POST /api/scan/analyze-frame` — JPEG + optional GPS (no persist)  
+3. `POST /api/scan/sessions/{id}/detections` — bulk save evidence  
+4. `POST /api/scan/sessions/{id}/complete` — counters + reporting  
+
+Center-crop (`leaf_focus.py`) runs only on the scan analyze path. Analysis / Leaf Scan pages are unchanged.
+
+---
+
+## Repository layout
+
+```
+cropguard-ai/
+├── README.md
+├── start.bat                      # Windows: backend :8001 + frontend :5500
+├── render.yaml                    # Render Docker service
+├── runtime.txt                    # Hint: python-3.11.9 (Docker is source of truth)
+├── .github/workflows/deploy.yml   # Pages deploy of ./frontend
+│
+├── frontend/                      # Static SPA (this folder is published to Pages)
+│   ├── index.html                 # React + Babel CDN, boots app.js
+│   ├── app.js                     # Entire UI (login, dashboard, farms, analysis,
+│   │                              #   leaf scan, live scan, alerts, reports, admin)
+│   ├── styles.css
+│   └── favicon.ico
+│
+└── backend/
+    ├── main.py                    # FastAPI app, CORS, mounts frontend if present
+    ├── requirements.txt           # App deps (no torch)
+    ├── Dockerfile + build.sh      # CPU torch + pip install
+    ├── .env.example               # Copy to .env
+    ├── seed.py                    # Demo users/farms (also auto-runs if DB empty)
+    ├── database.py                # SQLite + lightweight ALTER migrations
+    ├── models.py                  # User, Farm, Detection, Alert, ScanSession, …
+    ├── schemas.py                 # Request/response models
+    ├── auth.py                    # JWT, roles, farm access
+    ├── class_constants.py         # Bacterial / Healthy / Septoria (+ legacy map)
+    ├── ai_engine.py               # Primary leaf model + optional shadow v2 logging
+    ├── leaf_engine.py             # Leaf Scan inference
+    ├── leaf_focus.py              # Center-crop for Live Scan frames
+    ├── scan_smoothing.py          # 3-frame majority + plant_zone_id
+    ├── weather.py
+    ├── email_alerts.py / whatsapp_alerts.py / scan_reporting.py
+    ├── routers/
+    │   ├── users.py               # /api/auth, /api/users, /api/admin
+    │   ├── farms.py               # /api/farms
+    │   ├── detections.py          # /api/detections (analyze, batch, leaf, save)
+    │   ├── scan.py                # /api/scan
+    │   └── alerts.py              # /api/alerts
+    ├── models/                    # .pth weights (leaf model is git-tracked)
+    └── storage/                   # uploads / flagged / scan_flags (gitignored)
+```
+
+SQLite file `backend/cropguard.db` is **gitignored**; it is created on first run.
 
 ---
 
 ## Prerequisites
 
-- **Windows 10/11** (primary target; macOS/Linux also work)
-- **Python 3.11+** (tested on Python 3.14)
-- **pip** package manager
-- Trained model file: `chrysanthemum_model.pth` (see [Connect your model](#connect-your-chrysanthemum_modelpth) below)
+- Python **3.11** strongly preferred (matches Docker).
+- `pip`
+- Git
+- For AI locally: CPU **PyTorch** + torchvision (see backend setup)
+- Optional: Twilio + Gmail app password for alerts
+
+No Node.js required.
 
 ---
 
-## Quick start (Windows)
+## Environment variables
 
-### Option A — One-click launcher
+Copy `backend/.env.example` → `backend/.env`. FastAPI loads dotenv via `python-dotenv` where used; unset vars fall back to defaults.
 
-Double-click **`start.bat`** in the project root. It will:
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `JWT_SECRET` | **Production yes** | Signs JWTs. Default is a well-known dev string — change it on Render. |
+| `PORT` | Render sets this | Uvicorn listen port. Local default **8001**. |
+| `RENDER` | Set by Render | Switches DB path to `/tmp/cropguard.db`. |
+| `CROPGUARD_MODEL_PATH` | No | Override path to live `.pth`. |
+| `CROPGUARD_MODEL_URL` | No | Download URL if weights missing (used on Render). |
+| `CROPGUARD_LEAF_MODEL_PATH` | No | Override Leaf Scan weights. |
+| `CROPGUARD_LEAF_MODEL_URL` | No | Download URL for leaf weights. |
+| `CROPGUARD_SHADOW_MODEL_PATH` | No | Optional v2 model for logging only (not shown in UI). |
+| `TWILIO_SID` | No | WhatsApp via Twilio. All four Twilio vars must be set to send. |
+| `TWILIO_TOKEN` | No | |
+| `TWILIO_FROM` | No | e.g. `whatsapp:+14155238886` |
+| `ALERT_PHONE` | No | Destination, e.g. `whatsapp:+91…` |
+| `SMTP_HOST` | No | Default `smtp.gmail.com` |
+| `SMTP_PORT` | No | Default `587` |
+| `SMTP_USER` / `SMTP_PASSWORD` / `SMTP_FROM` | No | Email reports |
+| `SMTP_USE_TLS` | No | Default `true` |
+| `FRONTEND_URL` | No | Links in scan emails. Local: `http://localhost:5500`. Production: GitHub Pages URL. `DASHBOARD_URL` is an alias. |
 
-1. Open **Window 1** — FastAPI backend on port **8000**
-2. Open **Window 2** — Python `http.server` frontend on port **5500**
-3. Wait 3 seconds, then open both URLs in your browser
+Frontend has **no** `.env`. API host is hardcoded in `frontend/app.js` (`API_BASE`).
 
-### Option B — Manual setup (step by step)
+---
 
-#### Step 1 — Clone / open the project
+## Setup — backend
+
+From a terminal (PowerShell shown):
 
 ```powershell
-cd C:\Users\ktcha\Downloads\cropguard-ai
+cd C:\Users\ktcha\Downloads\cropguard-ai\backend
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 ```
 
-#### Step 2 — Install backend dependencies
+macOS/Linux: `python3 -m venv .venv && source .venv/bin/activate`
+
+### 1. Install PyTorch (CPU) then app deps
 
 ```powershell
-cd backend
+pip install --upgrade pip
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
 ```
 
-Or install packages directly:
+Without torch the API still starts; `/api/health` reports `torch_available: false` and classifications degrade.
+
+### 2. Environment file
 
 ```powershell
-pip install fastapi uvicorn sqlalchemy pydantic python-jose passlib bcrypt python-multipart pillow torch torchvision python-dotenv aiofiles
+copy .env.example .env
 ```
 
-#### Step 3 — Seed demo data (first time only)
+Edit `JWT_SECRET` at minimum if this machine is shared.
 
-From the project root:
+### 3. Model weights
 
-```powershell
-python backend\seed.py
+Expected file:
+
+```
+backend/models/chrysanthemum_leaf_model.pth
 ```
 
-Or from the backend folder:
+If missing, the engine may download from `CROPGUARD_MODEL_URL` / GitHub `raw` (file must be > ~5 MB). Confirm on startup banner: **LOADED**.
+
+### 4. Database
+
+First start of `main.py` calls `init_db()` and **auto-seeds** if the user table is empty. To seed explicitly:
 
 ```powershell
-cd backend
 python seed.py
 ```
 
-#### Step 4 — Start the backend
+Do **not** commit `cropguard.db`.
+
+### 5. Run the API
 
 ```powershell
-cd backend
 python main.py
 ```
 
-You should see the CropGuard AI startup banner with URLs, database path, and model status.
+| Local URL | Purpose |
+|-----------|---------|
+| http://localhost:8001 | API (+ serves frontend files if `frontend/` exists) |
+| http://localhost:8001/docs | Swagger |
+| http://localhost:8001/api/health | Model + torch status |
+| http://localhost:8001/api/ping | Liveness |
 
-#### Step 5 — Start the frontend (separate terminal)
+Stop with Ctrl+C.
+
+---
+
+## Setup — frontend
+
+The frontend is static files. It **must** be served from the `frontend` directory (so `./app.js` and `./styles.css` resolve).
 
 ```powershell
-cd frontend
+cd C:\Users\ktcha\Downloads\cropguard-ai\frontend
 python -m http.server 5500
 ```
 
-#### Step 6 — Open in browser
+Open **http://localhost:5500**.
 
-| URL | Purpose |
-|-----|---------|
-| http://localhost:5500 | **Frontend UI** (recommended for development) |
-| http://localhost:8000 | Backend + embedded frontend |
-| http://localhost:8000/docs | **FastAPI interactive API docs** |
+On `localhost`, `app.js` calls **http://localhost:8001**. Start the backend first.
 
-> The frontend on port **5500** automatically calls the API at **http://localhost:8000**.
+CORS already allows `http://localhost:5500`. If you use another static port, add it in `backend/main.py` (`CORSMiddleware`) or keep using `*`.
+
+There is no `npm install`, lint script, or production webpack bundle. GitHub Pages hosts these same files.
 
 ---
 
-## Default login credentials
+## Run locally (both)
 
-Created by `seed.py`:
+### Windows one-click
 
-| Email | Password | Role |
-|-------|----------|------|
-| `admin@cropguard.ai` | `admin123` | admin — Platform Admin dashboard |
-| `farmer@cropguard.ai` | `farmer123` | farmer — Demo farmer account |
-| `manager@cropguard.ai` | `manager123` | manager — Manages assigned farms |
+Double-click `start.bat` in the repo root. It opens:
 
-You can also register new farmer accounts from the login screen.
+1. Backend window → `python main.py` (port **8001**)
+2. Frontend window → `python -m http.server 5500`
+3. Browser tabs for both
 
----
+### Two terminals
 
-## Connect your chrysanthemum_model.pth
-
-CropGuard loads the fine-tuned MobileNetV2 model from your **ai engine** project.
-
-**Default path (Windows):**
-
-```
-C:\Users\ktcha\Downloads\ai engine\chrysanthemum_ai\models\chrysanthemum_model.pth
-```
-
-**Override with an environment variable:**
+**Terminal A — backend**
 
 ```powershell
-set CROPGUARD_MODEL_PATH=C:\path\to\your\chrysanthemum_model.pth
-cd backend
+cd C:\Users\ktcha\Downloads\cropguard-ai\backend
+.\.venv\Scripts\Activate.ps1   # if you created a venv
 python main.py
 ```
 
-**Train or retrain the model** using the linked project:
+**Terminal B — frontend**
 
 ```powershell
-cd "C:\Users\ktcha\Downloads\ai engine"
-python phase4_train.py
+cd C:\Users\ktcha\Downloads\cropguard-ai\frontend
+python -m http.server 5500
 ```
 
-Then restart the CropGuard backend. The startup banner shows **LOADED** or **NOT FOUND** for the model.
+Log in at http://localhost:5500 with a seed account above.
+
+### Sanity checks
+
+```powershell
+# from anywhere, with backend running
+curl http://localhost:8001/api/health
+```
+
+You want `"status": "ok"` and a loaded leaf model. Then: Dashboard → Analysis (upload a leaf photo) or Live Scan (camera / upload video).
 
 ---
 
-## File structure
+## Roles (what you can touch)
 
-```
-cropguard-ai/
-├── start.bat                 # Windows one-click launcher
-├── README.md                 # This file
-│
-├── backend/                  # FastAPI API server
-│   ├── main.py               # App entry point + startup banner
-│   ├── database.py           # SQLite connection (cropguard.db)
-│   ├── models.py             # SQLAlchemy tables
-│   ├── schemas.py            # Pydantic request/response models
-│   ├── auth.py               # JWT + bcrypt authentication
-│   ├── ai_engine.py          # Loads chrysanthemum_model.pth
-│   ├── seed.py               # Demo users, farms, detections
-│   ├── requirements.txt      # Python dependencies
-│   ├── cropguard.db          # SQLite database (auto-created)
-│   ├── storage/
-│   │   ├── uploads/          # Uploaded analysis images
-│   │   └── flagged/          # Alert snapshot images
-│   └── routers/
-│       ├── users.py          # Auth + admin routes
-│       ├── farms.py          # Farm CRUD + stats
-│       ├── detections.py     # AI analyze/save/report
-│       └── alerts.py         # Alerts + notifications
-│
-└── frontend/                 # React 18 SPA (CDN, no npm build)
-    ├── index.html            # Entry HTML
-    ├── app.js                # All React components
-    └── styles.css            # Design system + layouts
-```
+| Role | Typical access |
+|------|----------------|
+| `farmer` | Own farms, analysis, leaf scan, live scan, alerts, reports |
+| `manager` | Assigned farms; live walk-through sessions |
+| `admin` | Platform Admin: users, all farms, scan sessions, assignments, digest |
+
+Farm access is enforced in `auth.get_farm_for_user` — do not bypass it in new endpoints.
 
 ---
 
-## API endpoints reference
+## Main API map
 
-### Authentication
+Interactive list: http://localhost:8001/docs  
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/auth/register` | Register (name, email, password, role) |
-| POST | `/api/auth/login` | Login with JSON email + password |
-| GET | `/api/auth/me` | Current user (Bearer token) |
+| Prefix | Module | Notes |
+|--------|--------|--------|
+| `/api/auth` | `routers/users.py` | `POST /register`, `/login`, `GET /me` |
+| `/api/farms` | `routers/farms.py` | CRUD, `/stats`, `/weather` |
+| `/api/detections` | `routers/detections.py` | `analyze`, `analyze-batch`, `save`, `save-batch`, `analyze-leaf`, history, reports |
+| `/api/scan` | `routers/scan.py` | Live/video pipeline |
+| `/api/alerts` | `routers/alerts.py` | List, read, images |
+| `/api/admin` | `routers/users.py` | Admin-only |
+| `/api/health` | `main.py` | Model status |
 
-### Farms
+Auth: `Authorization: Bearer <jwt>`.
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/farms/` | List accessible farms |
-| POST | `/api/farms/` | Create farm |
-| GET | `/api/farms/{id}` | Farm details |
-| GET | `/api/farms/{id}/stats` | Health stats per farm |
-| PUT | `/api/farms/{id}` | Update farm |
-| DELETE | `/api/farms/{id}` | Delete farm |
+---
 
-### Detections / AI
+## Deployment (how production is wired)
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/detections/analyze` | Upload image → AI preview (no save) |
-| POST | `/api/detections/save` | Save confirmed result to farm |
-| GET | `/api/detections/farm/{id}` | Detection history for farm |
-| GET | `/api/detections/recent` | Last 20 detections |
-| GET | `/api/detections/stats` | Global detection stats |
-| GET | `/api/detections/report` | Farm report (`?farm_id=&from=&to=`) |
-| GET | `/api/detections/{id}/image` | Detection image file |
+### Frontend
 
-### Alerts
+Push to `main` → GitHub Action publishes `frontend/` to `gh-pages` → Pages URL above.
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/alerts/` | List alerts (`?filter=all\|unread\|diseased\|pest`) |
-| GET | `/api/alerts/stats` | Alert statistics |
-| GET | `/api/alerts/unread/count` | Unread count for notification bell |
-| PUT | `/api/alerts/mark-all-read` | Mark all alerts read |
-| PUT | `/api/alerts/{id}/read` | Mark single alert read |
-| GET | `/api/alerts/{id}/image` | Flagged alert image |
+After a frontend-only change, hard-refresh the Pages site (CDN cache).
 
-### Admin (admin role only)
+### Backend
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/admin/stats` | Platform-wide statistics |
-| GET | `/api/admin/all-farms` | All farms with health status |
-| GET | `/api/admin/all-users` | All users with farm counts |
-| GET | `/api/admin/activity-feed` | Last 20 detections platform-wide |
-| PUT | `/api/admin/users/{id}/role` | Change farmer ↔ manager |
+Render service `cropguard-ai-backend`, Docker, `rootDir: backend`.
 
-### System
+`PORT` is injected. Env vars to set in the Render dashboard (not only `render.yaml`):
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/health` | Health check + AI model status |
+- `JWT_SECRET` (required for real security)
+- `FRONTEND_URL` = `https://chandangowdakt.github.io/CropGuard-AI`
+- Optional Twilio / SMTP
+- Model URLs are already in `render.yaml`
 
-Full interactive docs: **http://localhost:8000/docs**
+SQLite on Render lives under `/tmp` and **does not persist** across deploys/restarts. Empty DB is auto-seeded. For durable production data, migrate to Postgres (not implemented yet).
+
+---
+
+## Conventions for new code
+
+- **Do not** add `import`/`export` at the start of `app.js`.
+- Prefer additive API fields (optional Pydantic) over breaking JSON shapes the SPA already sends.
+- Live Scan confirmation logic lives in `scan_smoothing.py`; UI should trust `is_problem` from analyze-frame.
+- Analysis page and Leaf Scan should not call `leaf_focus` / scan smoothing unless product asks for it.
+- Never commit `.env`, `*.db`, or `backend/storage/` uploads.
 
 ---
 
 ## Troubleshooting
 
-### `python` is not recognized
-
-Install Python from [python.org](https://www.python.org/downloads/) and check **“Add Python to PATH”** during installation. Restart Command Prompt.
-
-### `pip install` fails on torch
-
-Install CPU-only PyTorch first:
-
-```powershell
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-pip install -r requirements.txt
-```
-
-### AI Model shows NOT FOUND
-
-1. Verify the file exists:
-   ```
-   C:\Users\ktcha\Downloads\ai engine\chrysanthemum_ai\models\chrysanthemum_model.pth
-   ```
-2. Or set `CROPGUARD_MODEL_PATH` to your `.pth` file path.
-3. Run `python phase4_train.py` in the ai engine project if the model was never trained.
-
-### Frontend on :5500 cannot reach API
-
-- Ensure the **backend is running** on port 8000 first.
-- The frontend automatically uses `http://localhost:8000` when served on port 5500.
-- Check CORS is not blocked by a firewall.
-
-### Port 8000 or 5500 already in use
-
-```powershell
-netstat -ano | findstr :8000
-taskkill /PID <pid> /F
-```
-
-Or change the port in `backend/main.py` (uvicorn) and `start.bat`.
-
-### Login returns 401 / 422
-
-1. Run `python backend\seed.py` to create demo users.
-2. Use exact credentials: `farmer@cropguard.ai` / `farmer123`
-3. Restart the backend after code updates.
-
-### passlib / bcrypt errors on Python 3.14
-
-CropGuard uses a native bcrypt fallback in `auth.py`. Ensure `bcrypt` is installed:
-
-```powershell
-pip install bcrypt passlib
-```
-
-### Database schema out of date
-
-Delete `backend\cropguard.db` and re-run:
-
-```powershell
-python backend\seed.py
-```
-
-### Blank page on localhost:5500
-
-Serve from the **frontend** folder (not project root):
-
-```powershell
-cd frontend
-python -m http.server 5500
-```
+| Symptom | Check |
+|---------|--------|
+| Blank page on `:5500` | Serve from `frontend/`, not repo root. |
+| Login fails / CORS | Backend on **8001**, not 8000. |
+| Every prediction “uncertain” | Install CPU torch; confirm `GET /api/health` `torch_available`. |
+| `python` not found | Install Python and tick “Add to PATH”. |
+| passlib/bcrypt noise on 3.14 | Known; `auth.py` falls back to native bcrypt. |
+| Render 503 / long wait | Cold start on free plan. |
+| Stale Pages UI | Hard refresh; confirm latest `main` Action succeeded. |
+| Schema confusion | `database.py` adds columns with `ALTER TABLE` — avoid dropping columns. Last resort: delete local `cropguard.db` and restart (loses local data). |
 
 ---
 
-## Production notes
+## Related local training workspace
 
-Before deploying to real farmers:
+If you also have the training tree (not this git repo):
 
-1. Set `JWT_SECRET` environment variable (see `backend/auth.py`)
-2. Change default admin and demo passwords
-3. Use HTTPS behind nginx or similar
-4. Consider PostgreSQL instead of SQLite at scale
-5. Add email/SMS alerts (Gmail integration from your phase5 engine)
+```
+C:\Users\ktcha\Downloads\ai engine\
+```
+
+That folder is for dataset/training experiments. CropGuard production inference uses `backend/models/chrysanthemum_leaf_model.pth` only.
 
 ---
 
-## Linked AI engine project
-
-```
-C:\Users\ktcha\Downloads\ai engine\chrysanthemum_ai\
-```
-
-| Script | Purpose |
-|--------|---------|
-| `phase4_train.py` | Train / fine-tune MobileNetV2 |
-| `phase5_video.py` | Video monitoring + Gmail alerts |
-| `live_monitor.py` | Webcam monitoring |
-
-CropGuard AI — built for Indian chrysanthemum farmers.
+CropGuard AI — chrysanthemum leaf monitoring for Indian farms.
